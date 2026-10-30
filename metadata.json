@@ -1,0 +1,6 @@
+{
+  "name": "Gemini Studio Pro Chatbot",
+  "description": "Fast, intelligent AI chatbot powered by Google Gemini API with real-time streaming, persistent LocalStorage CRUD, and responsive UI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

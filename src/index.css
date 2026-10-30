@@ -1,0 +1,163 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-main: #212121;
+    --bg-sidebar: #171717;
+    --bg-surface: #2f2f2f;
+    --bg-hover: #262626;
+    --bg-code: #141414;
+    --border-subtle: #303030;
+    --border-strong: #424242;
+    --text-primary: #ececec;
+    --text-secondary: #b4b4b4;
+    --text-muted: #8e8e8e;
+    --accent: #10a37f; /* ChatGPT Teal / Green */
+  }
+
+  html.light {
+    --bg-main: #ffffff;
+    --bg-sidebar: #f9f9f9;
+    --bg-surface: #f4f4f4;
+    --bg-hover: #ececec;
+    --bg-code: #f6f6f6;
+    --border-subtle: #e5e5e5;
+    --border-strong: #d1d5db;
+    --text-primary: #0d0d0d;
+    --text-secondary: #5d5d5d;
+    --text-muted: #8e8e8e;
+    --accent: #10a37f;
+  }
+
+  body {
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+}
+
+/* Custom scrollbar styling (minimal and elegant like ChatGPT) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(142, 142, 142, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(142, 142, 142, 0.45);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Monospace font for code blocks */
+.font-mono-code {
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+}
+
+/* Material Symbols alignment */
+.material-symbols-outlined {
+  font-variation-settings:
+    'FILL' 0,
+    'wght' 400,
+    'GRAD' 0,
+    'opsz' 24;
+  vertical-align: middle;
+}
+
+/* Markdown prose styling */
+.markdown-prose {
+  color: inherit;
+}
+
+.markdown-prose p {
+  margin-bottom: 0.85rem;
+  line-height: 1.7;
+}
+
+.markdown-prose p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-prose h1,
+.markdown-prose h2,
+.markdown-prose h3,
+.markdown-prose h4 {
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.markdown-prose h1 { font-size: 1.4rem; }
+.markdown-prose h2 { font-size: 1.2rem; }
+.markdown-prose h3 { font-size: 1.05rem; }
+
+.markdown-prose ul {
+  list-style-type: disc;
+  padding-left: 1.35rem;
+  margin-bottom: 0.85rem;
+  line-height: 1.65;
+}
+
+.markdown-prose ol {
+  list-style-type: decimal;
+  padding-left: 1.35rem;
+  margin-bottom: 0.85rem;
+  line-height: 1.65;
+}
+
+.markdown-prose li {
+  margin-bottom: 0.35rem;
+}
+
+.markdown-prose blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 1rem;
+  font-style: italic;
+  color: var(--text-secondary);
+  margin: 0.85rem 0;
+}
+
+.markdown-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.875rem;
+}
+
+.markdown-prose th,
+.markdown-prose td {
+  border: 1px solid var(--border-subtle);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.markdown-prose th {
+  background-color: var(--bg-surface);
+  font-weight: 600;
+}
+
+.markdown-prose inline-code,
+.markdown-prose code:not(pre code) {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.3rem;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
