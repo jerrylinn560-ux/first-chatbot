@@ -2,8 +2,16 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/[...path].ts": {
-      "maxDuration": 60
-    }
-  }
+    "api/chat.ts": { "maxDuration": 60 },
+    "api/images/generate.ts": { "maxDuration": 30 },
+    "api/health.ts": { "maxDuration": 10 },
+    "api/models.ts": { "maxDuration": 10 }
+  },
+  "rewrites": [
+    { "source": "/api/chat", "destination": "/api/chat" },
+    { "source": "/api/images/generate", "destination": "/api/images/generate" },
+    { "source": "/api/health", "destination": "/api/health" },
+    { "source": "/api/models", "destination": "/api/models" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
 }

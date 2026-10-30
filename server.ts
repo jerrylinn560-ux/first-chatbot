@@ -5,8 +5,8 @@ import { GoogleGenAI } from '@google/genai';
 import {
   buildCompositeSystemInstruction,
   detectRepeatedQuestion,
-} from './src/lib/ai/system-instructions.ts';
-import { resolveAutoModel } from './src/lib/ai/model-router.ts';
+} from './src/lib/ai/system-instructions';
+import { resolveAutoModel } from './src/lib/ai/model-router';
 
 // Load environment variables
 dotenv.config({ path: '.env.local' });
@@ -38,12 +38,21 @@ const createGeminiClient = () => {
   });
 };
 
-const ALLOWED_MODELS = new Set([
-  'auto',
-  'gemini-3.1-flash-lite',
-  'gemini-3.8-flash',
-  'gemini-4-argon',
-]);
+// UI display names → real Gemini API model IDs
+const MODEL_MAP: Record<string, string> = {
+  'auto':                   'gemini-2.0-flash',
+  'gemini-3.1-flash-lite':  'gemini-2.0-flash-lite',
+  'gemini-3.8-flash':       'gemini-2.0-flash',
+  'gemini-4-argon':         'gemini-2.5-flash-preview-05-20',
+  // Allow real model IDs to pass through
+  'gemini-2.0-flash':       'gemini-2.0-flash',
+  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash':       'gemini-1.5-flash',
+  'gemini-1.5-pro':         'gemini-1.5-pro',
+};
+
+const ALLOWED_MODELS = new Set(Object.keys(MODEL_MAP));
+const FALLBACK_MODEL = 'gemini-2.0-flash-lite';
 
 function extractFriendlyErrorMessage(err: any): string {
   let raw = err?.message || String(err || '');
@@ -234,12 +243,13 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   const hasImageAttachment = Boolean(latestMsg?.image?.url);
   const promptText = latestMsg?.content || '';
 
-  // Smart Model Routing
-  let resolvedModel = 'gemini-3.1-flash-lite';
+  // Smart Model Routing — translate UI model name to real Gemini API model ID
+  let resolvedModel = MODEL_MAP['gemini-3.1-flash-lite'];
   if (requestedModel === 'auto') {
-    resolvedModel = resolveAutoModel(promptText, hasImageAttachment);
+    const autoResolved = resolveAutoModel(promptText, hasImageAttachment);
+    resolvedModel = MODEL_MAP[autoResolved] || MODEL_MAP[autoResolved.replace('gemini-', '')] || 'gemini-2.0-flash';
   } else if (ALLOWED_MODELS.has(requestedModel)) {
-    resolvedModel = requestedModel;
+    resolvedModel = MODEL_MAP[requestedModel] || FALLBACK_MODEL;
   }
 
   // Detect repeated question in this conversation
@@ -354,9 +364,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         ) {
           // Automatic failover model
           const fallbackModel =
-            resolvedModel === 'gemini-3.1-flash-lite'
-              ? 'gemini-3.8-flash'
-              : 'gemini-3.1-flash-lite';
+            resolvedModel === 'gemini-2.0-flash-lite'
+              ? 'gemini-2.0-flash'
+              : 'gemini-2.0-flash-lite';
           activeModel = fallbackModel;
           await tryStream(fallbackModel);
         } else {
@@ -398,9 +408,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         });
       } catch (firstErr: any) {
         const fallbackModel =
-          resolvedModel === 'gemini-3.1-flash-lite'
-            ? 'gemini-3.8-flash'
-            : 'gemini-3.1-flash-lite';
+          resolvedModel === 'gemini-2.0-flash-lite'
+            ? 'gemini-2.0-flash'
+            : 'gemini-2.0-flash-lite';
         activeModel = fallbackModel;
         response = await client.models.generateContent({
           model: fallbackModel,

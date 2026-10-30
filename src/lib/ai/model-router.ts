@@ -91,14 +91,14 @@ export function resolveAutoModel(prompt: string, hasImage = false): string {
   switch (task) {
     case 'math_logic':
     case 'coding':
-      // For deep coding and math reasoning, use gemini-4-argon (or fallback to 3.8)
-      return 'gemini-4-argon';
+      // For deep reasoning, use preview flash or fallback to standard flash
+      return 'gemini-2.5-flash-preview-05-20';
     case 'creative':
     case 'multimodal':
-      return 'gemini-3.8-flash';
+      return 'gemini-2.0-flash';
     case 'general':
     default:
       // Default to fastest low-latency model for regular conversation
-      return 'gemini-3.1-flash-lite';
+      return 'gemini-2.0-flash-lite';
   }
 }
