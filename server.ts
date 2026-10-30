@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import {
   buildCompositeSystemInstruction,
@@ -12,9 +11,6 @@ import { resolveAutoModel } from './src/lib/ai/model-router.ts';
 // Load environment variables
 dotenv.config({ path: '.env.local' });
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
@@ -155,6 +151,13 @@ app.post('/api/images/generate', async (req: Request, res: Response) => {
   // Attempt Google Gemini Image if requested
   if (provider === 'gemini') {
     try {
+      if (!getApiKey()) {
+        res.status(503).json({
+          error: 'GEMINI_API_KEY is not configured. Add it to the Vercel project environment variables.',
+        });
+        return;
+      }
+
       const client = createGeminiClient();
       const geminiRes = await client.models.generateContent({
         model: 'gemini-3.1-flash-lite-image',
@@ -248,6 +251,13 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     systemInstruction,
     repeatedInfo
   );
+
+  if (!getApiKey()) {
+    res.status(503).json({
+      error: 'GEMINI_API_KEY is not configured. Add it to the Vercel project environment variables.',
+    });
+    return;
+  }
 
   const client = createGeminiClient();
 
@@ -429,7 +439,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.resolve(distPath, 'index.html'));
