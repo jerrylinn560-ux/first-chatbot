@@ -23,11 +23,15 @@ const port = parseInt(process.env.PORT || '3000', 10);
 app.use(express.json({ limit: '25mb' }));
 
 const getApiKey = (): string => {
-  return process.env.GEMINI_API_KEY || 'AQ.Ab8RN6KrP9LUvLG0P3iRpxwUOjyCAUiqOzT_WJ9ggpwpKhk01A';
+  return process.env.GEMINI_API_KEY || '';
 };
 
 const createGeminiClient = () => {
   const apiKey = getApiKey();
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured. Set it in your deployment environment.');
+  }
+
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
@@ -437,7 +441,11 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Fatal server startup error:', err);
-  process.exit(1);
-});
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error('Fatal server startup error:', err);
+    process.exit(1);
+  });
+}
+
+export default app;
