@@ -38,21 +38,17 @@ const createGeminiClient = () => {
   });
 };
 
-// UI display names → real Gemini API model IDs
+// Current Gemini model IDs (confirmed from live API deprecation notice)
+// gemini-2.0-flash is deprecated — Google now uses gemini-3.x naming
 const MODEL_MAP: Record<string, string> = {
-  'auto':                   'gemini-2.0-flash',
-  'gemini-3.1-flash-lite':  'gemini-2.0-flash-lite',
-  'gemini-3.8-flash':       'gemini-2.0-flash',
-  'gemini-4-argon':         'gemini-2.5-flash-preview-05-20',
-  // Allow real model IDs to pass through
-  'gemini-2.0-flash':       'gemini-2.0-flash',
-  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash':       'gemini-1.5-flash',
-  'gemini-1.5-pro':         'gemini-1.5-pro',
+  'auto':                  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
+  'gemini-3.8-flash':      'gemini-3.8-flash',
+  'gemini-4-argon':        'gemini-3.8-flash',
 };
 
 const ALLOWED_MODELS = new Set(Object.keys(MODEL_MAP));
-const FALLBACK_MODEL = 'gemini-2.0-flash-lite';
+const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 
 function extractFriendlyErrorMessage(err: any): string {
   let raw = err?.message || String(err || '');
@@ -364,9 +360,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         ) {
           // Automatic failover model
           const fallbackModel =
-            resolvedModel === 'gemini-2.0-flash-lite'
-              ? 'gemini-2.0-flash'
-              : 'gemini-2.0-flash-lite';
+            resolvedModel === 'gemini-3.1-flash-lite'
+              ? 'gemini-3.8-flash'
+              : 'gemini-3.1-flash-lite';
           activeModel = fallbackModel;
           await tryStream(fallbackModel);
         } else {
@@ -408,9 +404,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         });
       } catch (firstErr: any) {
         const fallbackModel =
-          resolvedModel === 'gemini-2.0-flash-lite'
-            ? 'gemini-2.0-flash'
-            : 'gemini-2.0-flash-lite';
+          resolvedModel === 'gemini-3.1-flash-lite'
+            ? 'gemini-3.8-flash'
+            : 'gemini-3.1-flash-lite';
         activeModel = fallbackModel;
         response = await client.models.generateContent({
           model: fallbackModel,

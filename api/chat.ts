@@ -40,21 +40,16 @@ function buildSystemInstruction(style: string, customPersona?: string): string {
   return parts.join('\n\n');
 }
 
-// ---- Real, valid Gemini model IDs ----
+// ---- Current Gemini model IDs (confirmed live from Google API error response) ----
+// gemini-2.0-flash is deprecated — Google now uses gemini-3.x naming
 const MODEL_MAP: Record<string, string> = {
-  'auto':                   'gemini-2.0-flash',
-  'gemini-3.1-flash-lite':  'gemini-2.0-flash-lite',
-  'gemini-3.8-flash':       'gemini-2.0-flash',
-  'gemini-4-argon':         'gemini-2.5-flash-preview-05-20',
-  // Pass-through for any real model names already used
-  'gemini-2.0-flash':       'gemini-2.0-flash',
-  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash':       'gemini-1.5-flash',
-  'gemini-1.5-pro':         'gemini-1.5-pro',
-  'gemini-2.5-flash-preview-05-20': 'gemini-2.5-flash-preview-05-20',
+  'auto':                  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
+  'gemini-3.8-flash':      'gemini-3.8-flash',
+  'gemini-4-argon':        'gemini-3.8-flash',
 };
 
-const FALLBACK_MODEL = 'gemini-2.0-flash-lite';
+const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 
 function resolveModel(requested: string): string {
   return MODEL_MAP[requested] || FALLBACK_MODEL;
@@ -192,9 +187,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           errStr.includes('RESOURCE_EXHAUSTED');
 
         if (isRetriable) {
-          const fallback = resolvedModel === 'gemini-2.0-flash-lite'
-            ? 'gemini-2.0-flash'
-            : 'gemini-2.0-flash-lite';
+          const fallback = resolvedModel === 'gemini-3.1-flash-lite'
+            ? 'gemini-3.8-flash'
+            : 'gemini-3.1-flash-lite';
           await tryStream(fallback);
         } else {
           throw firstErr;
@@ -222,7 +217,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       response = await client.models.generateContent({ model: resolvedModel, contents, config });
     } catch (firstErr: any) {
-      const fallback = resolvedModel === 'gemini-2.0-flash-lite' ? 'gemini-2.0-flash' : 'gemini-2.0-flash-lite';
+      const fallback = resolvedModel === 'gemini-3.1-flash-lite' ? 'gemini-3.8-flash' : 'gemini-3.1-flash-lite';
       usedModel = fallback;
       response = await client.models.generateContent({ model: fallback, contents, config });
     }
