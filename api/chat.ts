@@ -40,36 +40,40 @@ function buildSystemInstruction(style: string, customPersona?: string): string {
   return parts.join('\n\n');
 }
 
-// ---- Real Gemini API model IDs (verified against Google Generative AI API) ----
-// These are the actual model IDs accepted by the Gemini API as of 2025.
+// ---- Supported Gemini models with Gemini 3.8 Flash as the flagship model ----
+const DEFAULT_MODEL = 'gemini-3.8-flash';
+const AUTO_FALLBACK_MODEL = 'gemini-2.5-flash';
+
 const MODEL_MAP: Record<string, string> = {
-  'auto':                   'gemini-2.0-flash',        // default for auto
-  'gemini-1.5-flash-8b':   'gemini-1.5-flash-8b',     // ultra-fast (free)
-  'gemini-2.0-flash':       'gemini-2.0-flash',        // fast & smart
-  'gemini-2.5-flash':       'gemini-2.5-flash',        // flagship
-  'gemini-2.5-pro':         'gemini-2.5-pro',          // deep reasoning
+  'auto': DEFAULT_MODEL,
+  'gemini-3.8-flash': 'gemini-3.8-flash',
+  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
+  'gemini-4-argon': 'gemini-4-argon',
+  'gemini-2.5-flash': 'gemini-2.5-flash',
+  'gemini-2.5-pro': 'gemini-2.5-pro',
+  'gemini-2.0-flash': 'gemini-2.0-flash',
+  'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite',
+  'gemini-1.5-flash': 'gemini-1.5-flash',
 };
 
-// Models that support automatic fallback (auto mode only)
-const AUTO_FALLBACK_MODEL = 'gemini-1.5-flash-8b';
-
 function resolveAutoModel(promptText: string, hasImage: boolean): string {
-  if (hasImage) return 'gemini-2.0-flash';
-
-  const p = promptText.toLowerCase();
-
-  // Math, STEM, complex reasoning → use 2.5 flash
-  if (/\b(math|calculus|equation|theorem|proof|algorithm|probability|physics|solve|quadratic|derivative|integral)\b/i.test(p)) {
-    return 'gemini-2.5-flash';
+  if (hasImage) return 'gemini-3.8-flash';
+  const lower = promptText.toLowerCase();
+  if (
+    lower.includes('code') ||
+    lower.includes('function') ||
+    lower.includes('bug') ||
+    lower.includes('algorithm') ||
+    lower.includes('solve') ||
+    lower.includes('proof') ||
+    lower.includes('calculate')
+  ) {
+    return 'gemini-3.8-flash';
   }
-
-  // Deep coding tasks → use 2.5 flash
-  if (/\b(refactor|architecture|system design|concurrency|deadlock|dockerfile|kubernetes|dynamic programming|compiler)\b/i.test(p) || /```[\s\S]*```/.test(promptText)) {
-    return 'gemini-2.5-flash';
+  if (promptText.length < 80) {
+    return 'gemini-3.1-flash-lite';
   }
-
-  // General / casual → use lite for speed
-  return 'gemini-1.5-flash-8b';
+  return DEFAULT_MODEL;
 }
 
 function extractFriendlyError(err: unknown, modelId?: string): { message: string; statusCode: number } {

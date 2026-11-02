@@ -38,17 +38,21 @@ const createGeminiClient = () => {
   });
 };
 
-// Current Gemini model IDs (verified against Google Generative AI API as of 2025)
+// Current Gemini model IDs (verified against Google Generative AI API)
 const MODEL_MAP: Record<string, string> = {
-  'auto':                   'gemini-2.0-flash',
-  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
-  'gemini-2.0-flash':       'gemini-2.0-flash',
+  'auto':                   'gemini-3.8-flash',
+  'gemini-3.8-flash':       'gemini-3.8-flash',
+  'gemini-3.1-flash-lite':  'gemini-3.1-flash-lite',
+  'gemini-4-argon':         'gemini-4-argon',
   'gemini-2.5-flash':       'gemini-2.5-flash',
   'gemini-2.5-pro':         'gemini-2.5-pro',
+  'gemini-2.0-flash':       'gemini-2.0-flash',
+  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash':       'gemini-1.5-flash',
 };
 
 const ALLOWED_MODELS = new Set(Object.keys(MODEL_MAP));
-const FALLBACK_MODEL = 'gemini-2.0-flash-lite';
+const FALLBACK_MODEL = 'gemini-3.8-flash';
 
 function extractFriendlyErrorMessage(err: any): string {
   let raw = err?.message || String(err || '');
@@ -85,7 +89,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'healthy',
     configured: Boolean(apiKey && apiKey.length > 5),
-    defaultModel: 'gemini-2.0-flash-lite',
+    defaultModel: 'gemini-3.8-flash',
     timestamp: Date.now(),
   });
 });
@@ -103,17 +107,17 @@ app.get('/api/models', (_req: Request, res: Response) => {
       isAuto: true,
     },
     {
+      id: 'gemini-3.8-flash',
+      name: 'Gemini 3.8 Flash',
+      badge: 'Flagship',
+      description: 'High intelligence, multimodal vision analysis, deep reasoning, and high speed',
+      isFree: true,
+    },
+    {
       id: 'gemini-3.1-flash-lite',
       name: 'Gemini 3.1 Flash Lite',
       badge: 'Ultra Fast',
       description: 'Fastest response time, low latency, ideal for conversation & quick answers',
-      isFree: true,
-    },
-    {
-      id: 'gemini-3.8-flash',
-      name: 'Gemini 3.8 Flash',
-      badge: 'Flagship',
-      description: 'High intelligence, multimodal vision analysis, and creative synthesis',
       isFree: true,
     },
     {
@@ -242,11 +246,11 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   const promptText = latestMsg?.content || '';
 
   // Smart Model Routing — translate UI model name to real Gemini API model ID
-  let resolvedModel = MODEL_MAP['gemini-2.0-flash-lite'];
+  let resolvedModel = MODEL_MAP['gemini-3.8-flash'];
   const isAutoMode = requestedModel === 'auto';
   if (isAutoMode) {
     const autoResolved = resolveAutoModel(promptText, hasImageAttachment);
-    resolvedModel = MODEL_MAP[autoResolved] || MODEL_MAP['gemini-2.0-flash-lite'];
+    resolvedModel = MODEL_MAP[autoResolved] || MODEL_MAP['gemini-3.8-flash'];
   } else if (ALLOWED_MODELS.has(requestedModel)) {
     resolvedModel = MODEL_MAP[requestedModel];
   } else {
@@ -368,7 +372,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
           isAutoMode
         ) {
           // Automatic failover model (only in auto mode)
-          const fallbackModel = 'gemini-2.0-flash-lite';
+          const fallbackModel = 'gemini-2.5-flash';
           activeModel = fallbackModel;
           await tryStream(fallbackModel);
         } else {
@@ -409,7 +413,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
           config,
         });
       } catch (firstErr: any) {
-        const fallbackModel = 'gemini-2.0-flash-lite';
+        const fallbackModel = 'gemini-2.5-flash';
         activeModel = fallbackModel;
         response = await client.models.generateContent({
           model: fallbackModel,

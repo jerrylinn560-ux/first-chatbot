@@ -11,95 +11,71 @@ export const ALL_MODELS: ModelOption[] = [
     isAuto: true,
   },
   {
-    id: 'gemini-1.5-flash-8b',
-    name: 'Gemini 1.5 Flash 8B',
-    badge: 'Ultra Fast',
-    description: 'Fastest response time, ultra-low latency, ideal for conversation & quick answers',
-    isFree: true,
-  },
-  {
-    id: 'gemini-2.0-flash',
-    name: 'Gemini 2.0 Flash',
-    badge: 'Fast & Smart',
-    description: 'Fast, multimodal, excellent for general tasks and image understanding',
-    isFree: true,
-  },
-  {
-    id: 'gemini-2.5-flash',
-    name: 'Gemini 2.5 Flash',
+    id: 'gemini-3.8-flash',
+    name: 'Gemini 3.8 Flash',
     badge: 'Flagship',
-    description: 'High intelligence, advanced reasoning, multimodal vision analysis, and creative synthesis',
+    description: 'High intelligence, multimodal vision analysis, deep reasoning, and high speed',
     isFree: true,
   },
   {
-    id: 'gemini-2.5-pro',
-    name: 'Gemini 2.5 Pro',
+    id: 'gemini-3.1-flash-lite',
+    name: 'Gemini 3.1 Flash Lite',
+    badge: 'Ultra Fast',
+    description: 'Fastest response time, low latency, ideal for conversation & quick answers',
+    isFree: true,
+  },
+  {
+    id: 'gemini-4-argon',
+    name: 'Gemini 4 Argon',
     badge: 'Deep Reasoning',
-    description: 'Most intelligent model — advanced mathematical logic, complex STEM, deep coding architecture',
+    description: 'Advanced mathematical logic, complex STEM, and deep coding architecture',
     isFree: false,
   },
 ];
 
-export type TaskCategory =
-  | 'math_logic'
-  | 'coding'
-  | 'creative'
-  | 'multimodal'
-  | 'general';
+export type TaskCategory = 'general' | 'vision' | 'reasoning' | 'fast';
 
 /**
- * Classifies prompt intent to intelligently route to the optimal model
+ * Classify user prompt to choose the optimal Gemini model
  */
 export function classifyPromptTask(prompt: string, hasImageAttachment = false): TaskCategory {
-  if (hasImageAttachment) {
-    return 'multimodal';
-  }
-
-  const p = prompt.toLowerCase();
-
-  // Math, logic, algorithms, proofs
+  if (hasImageAttachment) return 'vision';
+  const lower = prompt.toLowerCase();
   if (
-    /\b(math|calculus|equation|derivative|integral|matrix|theorem|proof|algorithm|probability|linear algebra|physics|solve for x|quadratic)\b/i.test(p) ||
-    /(\d+[\+\-\*\/\^]\d+.*=|\bcalculate\b|\bderive\b)/i.test(p)
+    lower.includes('code') ||
+    lower.includes('function') ||
+    lower.includes('class') ||
+    lower.includes('bug') ||
+    lower.includes('algorithm') ||
+    lower.includes('refactor') ||
+    lower.includes('typescript') ||
+    lower.includes('python') ||
+    lower.includes('solve') ||
+    lower.includes('derive') ||
+    lower.includes('proof') ||
+    lower.includes('calculate')
   ) {
-    return 'math_logic';
+    return 'reasoning';
   }
-
-  // Deep coding / complex software engineering
-  if (
-    /\b(refactor|optimize algorithm|memory leak|architecture|system design|concurrency|deadlock|dockerfile|kubernetes|sql join|binary tree|dynamic programming|compiler)\b/i.test(p) ||
-    /```[\s\S]*```/.test(prompt)
-  ) {
-    return 'coding';
+  if (prompt.length < 80) {
+    return 'fast';
   }
-
-  // Creative writing, story, poetry
-  if (
-    /\b(story|poem|novel|script|lyrics|creative writing|character design|plot twist|fiction|fantasy)\b/i.test(p)
-  ) {
-    return 'creative';
-  }
-
   return 'general';
 }
 
 /**
- * Resolves the actual model name to call when 'auto' routing is selected
+ * Resolves the optimal Gemini model ID based on the prompt task
  */
 export function resolveAutoModel(prompt: string, hasImage = false): string {
-  const task = classifyPromptTask(prompt, hasImage);
-
-  switch (task) {
-    case 'math_logic':
-      return 'gemini-2.5-flash';
-    case 'coding':
-      return 'gemini-2.5-flash';
-    case 'creative':
-      return 'gemini-2.0-flash';
-    case 'multimodal':
-      return 'gemini-2.0-flash';
+  const category = classifyPromptTask(prompt, hasImage);
+  switch (category) {
+    case 'vision':
+    case 'reasoning':
+      return 'gemini-3.8-flash';
+    case 'fast':
+      return 'gemini-3.1-flash-lite';
     case 'general':
     default:
-      return 'gemini-1.5-flash-8b';
+      return 'gemini-3.8-flash';
   }
 }
