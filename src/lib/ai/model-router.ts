@@ -11,8 +11,8 @@ export const ALL_MODELS: ModelOption[] = [
     isAuto: true,
   },
   {
-    id: 'gemini-2.0-flash-lite',
-    name: 'Gemini 2.0 Flash Lite',
+    id: 'gemini-1.5-flash-8b',
+    name: 'Gemini 1.5 Flash 8B',
     badge: 'Ultra Fast',
     description: 'Fastest response time, ultra-low latency, ideal for conversation & quick answers',
     isFree: true,
@@ -100,6 +100,6 @@ export function resolveAutoModel(prompt: string, hasImage = false): string {
       return 'gemini-2.0-flash';
     case 'general':
     default:
-      return 'gemini-2.0-flash-lite';
+      return 'gemini-1.5-flash-8b';
   }
 }

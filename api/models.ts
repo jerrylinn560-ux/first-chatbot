@@ -12,8 +12,8 @@ export default function handler(_req: VercelRequest, res: VercelResponse) {
       isAuto: true,
     },
     {
-      id: 'gemini-2.0-flash-lite',
-      name: 'Gemini 2.0 Flash Lite',
+      id: 'gemini-1.5-flash-8b',
+      name: 'Gemini 1.5 Flash 8B',
       badge: 'Ultra Fast',
       description: 'Fastest response time, ultra-low latency, ideal for conversation & quick answers',
       isFree: true,

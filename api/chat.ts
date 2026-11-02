@@ -43,15 +43,15 @@ function buildSystemInstruction(style: string, customPersona?: string): string {
 // ---- Real Gemini API model IDs (verified against Google Generative AI API) ----
 // These are the actual model IDs accepted by the Gemini API as of 2025.
 const MODEL_MAP: Record<string, string> = {
-  'auto':                  'gemini-2.0-flash',       // default for auto
-  'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite',  // ultra-fast
-  'gemini-2.0-flash':      'gemini-2.0-flash',       // fast & smart
-  'gemini-2.5-flash':      'gemini-2.5-flash',       // flagship
-  'gemini-2.5-pro':        'gemini-2.5-pro',         // deep reasoning
+  'auto':                   'gemini-2.0-flash',        // default for auto
+  'gemini-1.5-flash-8b':   'gemini-1.5-flash-8b',     // ultra-fast (free)
+  'gemini-2.0-flash':       'gemini-2.0-flash',        // fast & smart
+  'gemini-2.5-flash':       'gemini-2.5-flash',        // flagship
+  'gemini-2.5-pro':         'gemini-2.5-pro',          // deep reasoning
 };
 
 // Models that support automatic fallback (auto mode only)
-const AUTO_FALLBACK_MODEL = 'gemini-2.0-flash-lite';
+const AUTO_FALLBACK_MODEL = 'gemini-1.5-flash-8b';
 
 function resolveAutoModel(promptText: string, hasImage: boolean): string {
   if (hasImage) return 'gemini-2.0-flash';
@@ -69,7 +69,7 @@ function resolveAutoModel(promptText: string, hasImage: boolean): string {
   }
 
   // General / casual → use lite for speed
-  return 'gemini-2.0-flash-lite';
+  return 'gemini-1.5-flash-8b';
 }
 
 function extractFriendlyError(err: unknown, modelId?: string): { message: string; statusCode: number } {
