@@ -11,24 +11,31 @@ export const ALL_MODELS: ModelOption[] = [
     isAuto: true,
   },
   {
-    id: 'gemini-3.1-flash-lite',
-    name: 'Gemini 3.1 Flash Lite',
+    id: 'gemini-2.0-flash-lite',
+    name: 'Gemini 2.0 Flash Lite',
     badge: 'Ultra Fast',
-    description: 'Fastest response time, low latency, ideal for conversation & quick answers',
+    description: 'Fastest response time, ultra-low latency, ideal for conversation & quick answers',
     isFree: true,
   },
   {
-    id: 'gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash',
+    id: 'gemini-2.0-flash',
+    name: 'Gemini 2.0 Flash',
+    badge: 'Fast & Smart',
+    description: 'Fast, multimodal, excellent for general tasks and image understanding',
+    isFree: true,
+  },
+  {
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
     badge: 'Flagship',
-    description: 'High intelligence, multimodal vision analysis, and creative synthesis',
+    description: 'High intelligence, advanced reasoning, multimodal vision analysis, and creative synthesis',
     isFree: true,
   },
   {
-    id: 'gemini-4-argon',
-    name: 'Gemini 4 Argon',
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
     badge: 'Deep Reasoning',
-    description: 'Advanced mathematical logic, complex STEM, and deep coding architecture',
+    description: 'Most intelligent model — advanced mathematical logic, complex STEM, deep coding architecture',
     isFree: false,
   },
 ];
@@ -52,9 +59,7 @@ export function classifyPromptTask(prompt: string, hasImageAttachment = false): 
 
   // Math, logic, algorithms, proofs
   if (
-    /\b(math|calculus|equation|derivative|integral|matrix|theorem|proof|algorithm|probability|linear algebra|physics|solve for x|quadratic)\b/i.test(
-      p
-    ) ||
+    /\b(math|calculus|equation|derivative|integral|matrix|theorem|proof|algorithm|probability|linear algebra|physics|solve for x|quadratic)\b/i.test(p) ||
     /(\d+[\+\-\*\/\^]\d+.*=|\bcalculate\b|\bderive\b)/i.test(p)
   ) {
     return 'math_logic';
@@ -62,9 +67,7 @@ export function classifyPromptTask(prompt: string, hasImageAttachment = false): 
 
   // Deep coding / complex software engineering
   if (
-    /\b(refactor|optimize algorithm|memory leak|architecture|system design|concurrency|deadlock|dockerfile|kubernetes|sql join|binary tree|dynamic programming|compiler)\b/i.test(
-      p
-    ) ||
+    /\b(refactor|optimize algorithm|memory leak|architecture|system design|concurrency|deadlock|dockerfile|kubernetes|sql join|binary tree|dynamic programming|compiler)\b/i.test(p) ||
     /```[\s\S]*```/.test(prompt)
   ) {
     return 'coding';
@@ -72,9 +75,7 @@ export function classifyPromptTask(prompt: string, hasImageAttachment = false): 
 
   // Creative writing, story, poetry
   if (
-    /\b(story|poem|novel|script|lyrics|creative writing|character design|plot twist|fiction|fantasy)\b/i.test(
-      p
-    )
+    /\b(story|poem|novel|script|lyrics|creative writing|character design|plot twist|fiction|fantasy)\b/i.test(p)
   ) {
     return 'creative';
   }
@@ -90,13 +91,15 @@ export function resolveAutoModel(prompt: string, hasImage = false): string {
 
   switch (task) {
     case 'math_logic':
+      return 'gemini-2.5-flash';
     case 'coding':
-      return 'gemini-3.8-flash';
+      return 'gemini-2.5-flash';
     case 'creative':
+      return 'gemini-2.0-flash';
     case 'multimodal':
-      return 'gemini-3.8-flash';
+      return 'gemini-2.0-flash';
     case 'general':
     default:
-      return 'gemini-3.1-flash-lite';
+      return 'gemini-2.0-flash-lite';
   }
 }

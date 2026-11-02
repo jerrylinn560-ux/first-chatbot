@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// ---- Shared helpers (inlined to avoid .ts extension imports in serverless) ----
+// ---- System instruction helpers (inlined to avoid .ts extension import issues in serverless) ----
 
 const BASE_PERSONALITY_PROMPT = `You are an advanced, natural, highly capable AI assistant with a ChatGPT-inspired conversational elegance and dynamic personality.
 
@@ -34,47 +34,71 @@ const STYLE_INSTRUCTIONS: Record<string, string> = {
 function buildSystemInstruction(style: string, customPersona?: string): string {
   const parts: string[] = [BASE_PERSONALITY_PROMPT];
   if (STYLE_INSTRUCTIONS[style]) parts.push(STYLE_INSTRUCTIONS[style]);
-  if (customPersona && customPersona.trim()) {
+  if (customPersona && customPersona.trim() && customPersona.trim() !== BASE_PERSONALITY_PROMPT) {
     parts.push(`USER CUSTOM INSTRUCTIONS:\n${customPersona.trim()}`);
   }
   return parts.join('\n\n');
 }
 
-// ---- Current Gemini model IDs (confirmed live from Google API error response) ----
-// gemini-2.0-flash is deprecated — Google now uses gemini-3.x naming
+// ---- Real Gemini API model IDs (verified against Google Generative AI API) ----
+// These are the actual model IDs accepted by the Gemini API as of 2025.
 const MODEL_MAP: Record<string, string> = {
-  'auto':                  'gemini-3.8-flash',
-  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
-  'gemini-3.8-flash':      'gemini-3.8-flash',
-  'gemini-4-argon':        'gemini-3.8-flash',
+  'auto':                  'gemini-2.0-flash',       // default for auto
+  'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite',  // ultra-fast
+  'gemini-2.0-flash':      'gemini-2.0-flash',       // fast & smart
+  'gemini-2.5-flash':      'gemini-2.5-flash',       // flagship
+  'gemini-2.5-pro':        'gemini-2.5-pro',         // deep reasoning
 };
 
-const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
+// Models that support automatic fallback (auto mode only)
+const AUTO_FALLBACK_MODEL = 'gemini-2.0-flash-lite';
 
-function resolveModel(requested: string): string {
-  return MODEL_MAP[requested] || FALLBACK_MODEL;
+function resolveAutoModel(promptText: string, hasImage: boolean): string {
+  if (hasImage) return 'gemini-2.0-flash';
+
+  const p = promptText.toLowerCase();
+
+  // Math, STEM, complex reasoning → use 2.5 flash
+  if (/\b(math|calculus|equation|theorem|proof|algorithm|probability|physics|solve|quadratic|derivative|integral)\b/i.test(p)) {
+    return 'gemini-2.5-flash';
+  }
+
+  // Deep coding tasks → use 2.5 flash
+  if (/\b(refactor|architecture|system design|concurrency|deadlock|dockerfile|kubernetes|dynamic programming|compiler)\b/i.test(p) || /```[\s\S]*```/.test(promptText)) {
+    return 'gemini-2.5-flash';
+  }
+
+  // General / casual → use lite for speed
+  return 'gemini-2.0-flash-lite';
 }
 
-function extractFriendlyError(err: unknown): string {
+function extractFriendlyError(err: unknown, modelId?: string): { message: string; statusCode: number } {
   const raw = (err as any)?.message || String(err || '');
+
   if (raw.includes('503') || raw.includes('high demand') || raw.includes('UNAVAILABLE')) {
-    return 'The AI model is experiencing high demand. Please try again in a moment.';
+    return { message: 'The AI model is experiencing high demand. Please try again in a moment.', statusCode: 503 };
   }
   if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota')) {
-    return 'Rate limit reached. Please wait a few seconds before retrying.';
+    return { message: 'Rate limit reached. Please wait a few seconds before retrying.', statusCode: 429 };
   }
   if (raw.includes('API_KEY_INVALID') || raw.includes('API key not valid') || raw.includes('401')) {
-    return 'Invalid or missing Gemini API key. Set GEMINI_API_KEY in your Vercel environment variables.';
+    return { message: 'Invalid or missing Gemini API key. Set GEMINI_API_KEY in your Vercel environment variables.', statusCode: 401 };
+  }
+  if (raw.includes('404') || raw.includes('not found') || raw.includes('does not exist')) {
+    return { message: modelId ? `Model "${modelId}" is not available. Please select a different model.` : 'Requested model is not available.', statusCode: 404 };
   }
   if (raw.includes('402') || raw.includes('billing') || raw.includes('Payment')) {
-    return 'Gemini API billing issue. Please check your Google Cloud billing account.';
+    return { message: 'Gemini API billing issue. Please check your Google Cloud billing account.', statusCode: 402 };
   }
-  return raw || 'An unexpected error occurred while processing your request.';
+  if (raw.includes('400') || raw.includes('invalid')) {
+    return { message: 'Invalid request sent to AI. Please try again.', statusCode: 400 };
+  }
+  return { message: raw || 'An unexpected error occurred while processing your request.', statusCode: 500 };
 }
 
 // ---- Main handler ----
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS preflight
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -92,7 +116,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY || '';
   if (!apiKey || apiKey.length < 10) {
     res.status(503).json({
-      error: 'GEMINI_API_KEY is not configured. Add it to your Vercel project environment variables at vercel.com/dashboard → Project → Settings → Environment Variables.',
+      error: 'GEMINI_API_KEY is not configured. Add it to your Vercel project at: vercel.com/dashboard → Project → Settings → Environment Variables.',
     });
     return;
   }
@@ -112,12 +136,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const resolvedModel = resolveModel(requestedModel);
-  const compositeInstruction = buildSystemInstruction(responseStyle, systemInstruction);
+  // --- Model Resolution ---
+  // For 'auto', intelligently pick a real model.
+  // For manual selection, validate the model ID strictly — never silently switch.
+  const isAutoMode = requestedModel === 'auto';
+  let resolvedModel: string;
 
+  if (isAutoMode) {
+    const latestMsg = messages[messages.length - 1];
+    const hasImage = Boolean(latestMsg?.image?.url);
+    const promptText = latestMsg?.content || '';
+    resolvedModel = resolveAutoModel(promptText, hasImage);
+  } else {
+    // Strict validation — reject unknown models instead of silently using fallback
+    if (!MODEL_MAP[requestedModel]) {
+      res.status(400).json({
+        error: `Unknown model: "${requestedModel}". Supported models: ${Object.keys(MODEL_MAP).filter(k => k !== 'auto').join(', ')}`,
+      });
+      return;
+    }
+    resolvedModel = MODEL_MAP[requestedModel];
+  }
+
+  const compositeInstruction = buildSystemInstruction(responseStyle, systemInstruction);
   const client = new GoogleGenAI({ apiKey });
 
-  // Build contents — last 12 messages max
+  // Build contents — last 12 messages max to avoid excessive payload
   const recentMessages = messages.slice(-12);
   const contents = recentMessages.map((m: any) => {
     const parts: any[] = [];
@@ -155,9 +199,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    // CRITICAL: flush headers immediately so Vercel starts streaming
+    (res as any).flushHeaders?.();
 
     let accumulatedText = '';
     let chunkCount = 0;
+    let activeModel = resolvedModel;
 
     const tryStream = async (modelId: string) => {
       const responseStream = await client.models.generateContentStream({
@@ -165,12 +212,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         contents,
         config,
       });
+
       for await (const chunk of responseStream) {
         const delta = chunk.text;
         if (delta) {
           accumulatedText += delta;
           chunkCount++;
           res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
+          // Flush after each chunk to ensure Vercel doesn't buffer
+          (res as any).flush?.();
         }
       }
     };
@@ -180,17 +230,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         await tryStream(resolvedModel);
       } catch (firstErr: any) {
         const errStr = String(firstErr?.message || firstErr || '');
-        const isRetriable =
+        const isTransient =
           errStr.includes('503') ||
           errStr.includes('UNAVAILABLE') ||
           errStr.includes('429') ||
           errStr.includes('RESOURCE_EXHAUSTED');
 
-        if (isRetriable) {
-          const fallback = resolvedModel === 'gemini-3.1-flash-lite'
-            ? 'gemini-3.8-flash'
-            : 'gemini-3.1-flash-lite';
-          await tryStream(fallback);
+        // Only auto-fallback in auto mode for transient errors
+        // Never silently switch on manually selected models
+        if (isAutoMode && isTransient) {
+          activeModel = AUTO_FALLBACK_MODEL;
+          // Notify frontend about the model switch
+          res.write(`data: ${JSON.stringify({ info: `Switched to ${AUTO_FALLBACK_MODEL} due to high demand.` })}\n\n`);
+          await tryStream(AUTO_FALLBACK_MODEL);
         } else {
           throw firstErr;
         }
@@ -200,11 +252,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const estimatedTokens = Math.max(Math.round(accumulatedText.length / 4), chunkCount);
       const tokPerSec = Math.round(estimatedTokens / durationSec);
 
-      res.write(`data: ${JSON.stringify({ done: true, tokens: estimatedTokens, speed: tokPerSec, modelUsed: resolvedModel })}\n\n`);
+      res.write(`data: ${JSON.stringify({ done: true, tokens: estimatedTokens, speed: tokPerSec, modelUsed: activeModel })}\n\n`);
       res.end();
     } catch (err: unknown) {
       console.error('[Chat Stream Error]:', err);
-      res.write(`data: ${JSON.stringify({ error: extractFriendlyError(err) })}\n\n`);
+      const { message } = extractFriendlyError(err, resolvedModel);
+      res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
       res.end();
     }
     return;
@@ -217,9 +270,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       response = await client.models.generateContent({ model: resolvedModel, contents, config });
     } catch (firstErr: any) {
-      const fallback = resolvedModel === 'gemini-3.1-flash-lite' ? 'gemini-3.8-flash' : 'gemini-3.1-flash-lite';
-      usedModel = fallback;
-      response = await client.models.generateContent({ model: fallback, contents, config });
+      const errStr = String(firstErr?.message || firstErr || '');
+      const isTransient = errStr.includes('503') || errStr.includes('UNAVAILABLE') || errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED');
+
+      if (isAutoMode && isTransient) {
+        usedModel = AUTO_FALLBACK_MODEL;
+        response = await client.models.generateContent({ model: AUTO_FALLBACK_MODEL, contents, config });
+      } else {
+        throw firstErr;
+      }
     }
 
     const text = response.text || '';
@@ -234,6 +293,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err: unknown) {
     console.error('[Chat Generate Error]:', err);
-    res.status(500).json({ error: extractFriendlyError(err) });
+    const { message, statusCode } = extractFriendlyError(err, resolvedModel);
+    res.status(statusCode).json({ error: message });
   }
 }

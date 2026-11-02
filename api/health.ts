@@ -5,7 +5,7 @@ export default function handler(_req: VercelRequest, res: VercelResponse) {
   res.status(200).json({
     status: 'healthy',
     configured: Boolean(apiKey && apiKey.length > 10),
-    defaultModel: 'gemini-2.0-flash',
+    defaultModel: 'gemini-2.0-flash-lite',
     timestamp: Date.now(),
   });
 }

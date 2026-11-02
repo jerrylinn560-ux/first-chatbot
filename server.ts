@@ -38,17 +38,17 @@ const createGeminiClient = () => {
   });
 };
 
-// Current Gemini model IDs (confirmed from live API deprecation notice)
-// gemini-2.0-flash is deprecated — Google now uses gemini-3.x naming
+// Current Gemini model IDs (verified against Google Generative AI API as of 2025)
 const MODEL_MAP: Record<string, string> = {
-  'auto':                  'gemini-3.8-flash',
-  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
-  'gemini-3.8-flash':      'gemini-3.8-flash',
-  'gemini-4-argon':        'gemini-3.8-flash',
+  'auto':                   'gemini-2.0-flash',
+  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash':       'gemini-2.0-flash',
+  'gemini-2.5-flash':       'gemini-2.5-flash',
+  'gemini-2.5-pro':         'gemini-2.5-pro',
 };
 
 const ALLOWED_MODELS = new Set(Object.keys(MODEL_MAP));
-const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
+const FALLBACK_MODEL = 'gemini-2.0-flash-lite';
 
 function extractFriendlyErrorMessage(err: any): string {
   let raw = err?.message || String(err || '');
@@ -85,7 +85,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'healthy',
     configured: Boolean(apiKey && apiKey.length > 5),
-    defaultModel: 'gemini-3.1-flash-lite',
+    defaultModel: 'gemini-2.0-flash-lite',
     timestamp: Date.now(),
   });
 });
@@ -165,7 +165,9 @@ app.post('/api/images/generate', async (req: Request, res: Response) => {
 
       const client = createGeminiClient();
       const geminiRes = await client.models.generateContent({
-        model: 'gemini-3.1-flash-lite-image',
+        model: 'gemini-2.0-flash',
+        // Note: Native Gemini image generation uses imagen-3.0-generate-002,
+        // but for simplicity we use Pollinations as primary. This gemini path is a fallback.
         contents: styledPrompt,
         config: {
           imageConfig: {
@@ -240,12 +242,18 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   const promptText = latestMsg?.content || '';
 
   // Smart Model Routing — translate UI model name to real Gemini API model ID
-  let resolvedModel = MODEL_MAP['gemini-3.1-flash-lite'];
-  if (requestedModel === 'auto') {
+  let resolvedModel = MODEL_MAP['gemini-2.0-flash-lite'];
+  const isAutoMode = requestedModel === 'auto';
+  if (isAutoMode) {
     const autoResolved = resolveAutoModel(promptText, hasImageAttachment);
-    resolvedModel = MODEL_MAP[autoResolved] || MODEL_MAP[autoResolved.replace('gemini-', '')] || 'gemini-2.0-flash';
+    resolvedModel = MODEL_MAP[autoResolved] || MODEL_MAP['gemini-2.0-flash-lite'];
   } else if (ALLOWED_MODELS.has(requestedModel)) {
-    resolvedModel = MODEL_MAP[requestedModel] || FALLBACK_MODEL;
+    resolvedModel = MODEL_MAP[requestedModel];
+  } else {
+    res.status(400).json({
+      error: `Unknown model: "${requestedModel}". Supported models: ${Array.from(ALLOWED_MODELS).filter(k => k !== 'auto').join(', ')}`,
+    });
+    return;
   }
 
   // Detect repeated question in this conversation
@@ -356,13 +364,11 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             errStr.includes('UNAVAILABLE') ||
             errStr.includes('quota') ||
             errStr.includes('429')) &&
-          !isAborted
+          !isAborted &&
+          isAutoMode
         ) {
-          // Automatic failover model
-          const fallbackModel =
-            resolvedModel === 'gemini-3.1-flash-lite'
-              ? 'gemini-3.8-flash'
-              : 'gemini-3.1-flash-lite';
+          // Automatic failover model (only in auto mode)
+          const fallbackModel = 'gemini-2.0-flash-lite';
           activeModel = fallbackModel;
           await tryStream(fallbackModel);
         } else {
@@ -403,10 +409,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
           config,
         });
       } catch (firstErr: any) {
-        const fallbackModel =
-          resolvedModel === 'gemini-3.1-flash-lite'
-            ? 'gemini-3.8-flash'
-            : 'gemini-3.1-flash-lite';
+        const fallbackModel = 'gemini-2.0-flash-lite';
         activeModel = fallbackModel;
         response = await client.models.generateContent({
           model: fallbackModel,
