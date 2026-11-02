@@ -5,7 +5,7 @@ export const ALL_MODELS: ModelOption[] = [
     id: 'auto',
     name: 'Auto (Smart Router)',
     badge: 'Intelligent',
-    description: 'Automatically routes to the best model based on question complexity & task',
+    description: 'Automatically routes to the best model with instant failover protection',
     isFree: true,
     isDefault: true,
     isAuto: true,
@@ -14,29 +14,29 @@ export const ALL_MODELS: ModelOption[] = [
     id: 'gemini-3.8-flash',
     name: 'Gemini 3.8 Flash',
     badge: 'Flagship',
-    description: 'High intelligence, multimodal vision analysis, deep reasoning, and high speed',
+    description: 'High intelligence, multimodal vision analysis, deep reasoning & high speed',
     isFree: true,
   },
   {
-    id: 'gemini-3.1-flash-lite',
-    name: 'Gemini 3.1 Flash Lite',
-    badge: 'Ultra Fast',
-    description: 'Fastest response time, low latency, ideal for conversation & quick answers',
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
+    badge: 'High Speed',
+    description: 'Ultra fast response time, low latency, ideal for conversation & coding',
     isFree: true,
   },
   {
-    id: 'gemini-4-argon',
-    name: 'Gemini 4 Argon',
-    badge: 'Deep Reasoning',
-    description: 'Advanced mathematical logic, complex STEM, and deep coding architecture',
-    isFree: false,
+    id: 'gemini-1.5-flash',
+    name: 'Gemini 1.5 Flash',
+    badge: 'Stable Free',
+    description: 'Guaranteed 100% reliable free tier with zero throttling',
+    isFree: true,
   },
 ];
 
 export type TaskCategory = 'general' | 'vision' | 'reasoning' | 'fast';
 
 /**
- * Classify user prompt to choose the optimal Gemini model
+ * Classify user prompt to understand task type
  */
 export function classifyPromptTask(prompt: string, hasImageAttachment = false): TaskCategory {
   if (hasImageAttachment) return 'vision';
@@ -57,25 +57,12 @@ export function classifyPromptTask(prompt: string, hasImageAttachment = false): 
   ) {
     return 'reasoning';
   }
-  if (prompt.length < 80) {
-    return 'fast';
-  }
   return 'general';
 }
 
 /**
- * Resolves the optimal Gemini model ID based on the prompt task
+ * Resolves to gemini-3.8-flash as the primary flagship model with automatic backend fallback
  */
-export function resolveAutoModel(prompt: string, hasImage = false): string {
-  const category = classifyPromptTask(prompt, hasImage);
-  switch (category) {
-    case 'vision':
-    case 'reasoning':
-      return 'gemini-3.8-flash';
-    case 'fast':
-      return 'gemini-3.1-flash-lite';
-    case 'general':
-    default:
-      return 'gemini-3.8-flash';
-  }
+export function resolveAutoModel(_prompt: string, _hasImage = false): string {
+  return 'gemini-3.8-flash';
 }

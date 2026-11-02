@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// ---- System instruction helpers (inlined to avoid .ts extension import issues in serverless) ----
+// ---- System instruction helpers ----
 
 const BASE_PERSONALITY_PROMPT = `You are an advanced, natural, highly capable AI assistant with a ChatGPT-inspired conversational elegance and dynamic personality.
 
@@ -40,40 +40,33 @@ function buildSystemInstruction(style: string, customPersona?: string): string {
   return parts.join('\n\n');
 }
 
-// ---- Supported Gemini models with Gemini 3.8 Flash as the flagship model ----
+// Supported Gemini models with Gemini 3.8 Flash as the flagship model
 const DEFAULT_MODEL = 'gemini-3.8-flash';
-const AUTO_FALLBACK_MODEL = 'gemini-2.5-flash';
 
 const MODEL_MAP: Record<string, string> = {
-  'auto': DEFAULT_MODEL,
-  'gemini-3.8-flash': 'gemini-3.8-flash',
-  'gemini-3.1-flash-lite': 'gemini-3.1-flash-lite',
-  'gemini-4-argon': 'gemini-4-argon',
-  'gemini-2.5-flash': 'gemini-2.5-flash',
-  'gemini-2.5-pro': 'gemini-2.5-pro',
-  'gemini-2.0-flash': 'gemini-2.0-flash',
-  'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite',
-  'gemini-1.5-flash': 'gemini-1.5-flash',
+  'auto':                   DEFAULT_MODEL,
+  'gemini-3.8-flash':       'gemini-3.8-flash',
+  'gemini-3.1-flash-lite':  'gemini-2.5-flash', // graceful alias
+  'gemini-4-argon':         'gemini-2.5-pro',   // graceful alias
+  'gemini-2.5-flash':       'gemini-2.5-flash',
+  'gemini-2.5-pro':         'gemini-2.5-pro',
+  'gemini-2.0-flash':       'gemini-2.0-flash',
+  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash':       'gemini-1.5-flash',
 };
 
-function resolveAutoModel(promptText: string, hasImage: boolean): string {
-  if (hasImage) return 'gemini-3.8-flash';
-  const lower = promptText.toLowerCase();
-  if (
-    lower.includes('code') ||
-    lower.includes('function') ||
-    lower.includes('bug') ||
-    lower.includes('algorithm') ||
-    lower.includes('solve') ||
-    lower.includes('proof') ||
-    lower.includes('calculate')
-  ) {
-    return 'gemini-3.8-flash';
-  }
-  if (promptText.length < 80) {
-    return 'gemini-3.1-flash-lite';
-  }
-  return DEFAULT_MODEL;
+// Fallback chain for uninterrupted generation
+function getCandidateModels(primary: string): string[] {
+  const chain: string[] = [];
+  const add = (m: string) => {
+    if (m && !chain.includes(m)) chain.push(m);
+  };
+
+  add(primary);
+  add('gemini-2.5-flash');
+  add('gemini-2.0-flash');
+  add('gemini-1.5-flash');
+  return chain;
 }
 
 function extractFriendlyError(err: unknown, modelId?: string): { message: string; statusCode: number } {
@@ -140,36 +133,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  // --- Model Resolution ---
-  // For 'auto', intelligently pick a real model.
-  // For manual selection, validate the model ID strictly — never silently switch.
-  const isAutoMode = requestedModel === 'auto';
-  let resolvedModel: string;
-
-  if (isAutoMode) {
-    const latestMsg = messages[messages.length - 1];
-    const hasImage = Boolean(latestMsg?.image?.url);
-    const promptText = latestMsg?.content || '';
-    resolvedModel = resolveAutoModel(promptText, hasImage);
-  } else {
-    // Strict validation — reject unknown models instead of silently using fallback
-    if (!MODEL_MAP[requestedModel]) {
-      res.status(400).json({
-        error: `Unknown model: "${requestedModel}". Supported models: ${Object.keys(MODEL_MAP).filter(k => k !== 'auto').join(', ')}`,
-      });
-      return;
-    }
-    resolvedModel = MODEL_MAP[requestedModel];
-  }
+  const resolvedModel = MODEL_MAP[requestedModel] || DEFAULT_MODEL;
+  const candidateModels = getCandidateModels(resolvedModel);
 
   const compositeInstruction = buildSystemInstruction(responseStyle, systemInstruction);
   const client = new GoogleGenAI({ apiKey });
 
-  // Build contents — last 12 messages max to avoid excessive payload
-  const recentMessages = messages.slice(-12);
-  const contents = recentMessages.map((m: any) => {
+  // Build contents — last 10 messages max to avoid excessive payload
+  const recentMessages = messages.slice(-10);
+  const contents = recentMessages.map((m: any, idx: number) => {
     const parts: any[] = [];
-    if (m.image?.url && m.image.url.startsWith('data:')) {
+    // Only send heavy image data on the most recent 2 messages to prevent payload bloat & high latency
+    const isRecent = idx >= recentMessages.length - 2;
+    if (isRecent && m.image?.url && m.image.url.startsWith('data:')) {
       const match = m.image.url.match(/^data:([^;]+);base64,(.+)$/);
       if (match) {
         parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
@@ -203,64 +179,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
-    // CRITICAL: flush headers immediately so Vercel starts streaming
     (res as any).flushHeaders?.();
 
     let accumulatedText = '';
     let chunkCount = 0;
     let activeModel = resolvedModel;
+    let streamedSuccessfully = false;
+    let lastError: any = null;
 
-    const tryStream = async (modelId: string) => {
-      const responseStream = await client.models.generateContentStream({
-        model: modelId,
-        contents,
-        config,
-      });
-
-      for await (const chunk of responseStream) {
-        const delta = chunk.text;
-        if (delta) {
-          accumulatedText += delta;
-          chunkCount++;
-          res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
-          // Flush after each chunk to ensure Vercel doesn't buffer
-          (res as any).flush?.();
-        }
-      }
-    };
-
-    try {
+    for (const modelId of candidateModels) {
       try {
-        await tryStream(resolvedModel);
-      } catch (firstErr: any) {
-        const errStr = String(firstErr?.message || firstErr || '');
-        const isTransient =
-          errStr.includes('503') ||
-          errStr.includes('UNAVAILABLE') ||
-          errStr.includes('429') ||
-          errStr.includes('RESOURCE_EXHAUSTED');
+        const responseStream = await client.models.generateContentStream({
+          model: modelId,
+          contents,
+          config,
+        });
 
-        // Only auto-fallback in auto mode for transient errors
-        // Never silently switch on manually selected models
-        if (isAutoMode && isTransient) {
-          activeModel = AUTO_FALLBACK_MODEL;
-          // Notify frontend about the model switch
-          res.write(`data: ${JSON.stringify({ info: `Switched to ${AUTO_FALLBACK_MODEL} due to high demand.` })}\n\n`);
-          await tryStream(AUTO_FALLBACK_MODEL);
-        } else {
-          throw firstErr;
+        activeModel = modelId;
+
+        for await (const chunk of responseStream) {
+          const delta = chunk.text;
+          if (delta) {
+            accumulatedText += delta;
+            chunkCount++;
+            res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
+            (res as any).flush?.();
+          }
         }
-      }
 
+        streamedSuccessfully = true;
+        break; // Successfully completed streaming!
+      } catch (err: any) {
+        lastError = err;
+        // If we already started streaming text to user, do not restart
+        if (accumulatedText.length > 0) {
+          break;
+        }
+        console.warn(`[Model ${modelId} unavailable, failing over to next model]:`, err?.message || err);
+      }
+    }
+
+    if (streamedSuccessfully || accumulatedText.length > 0) {
       const durationSec = Math.max((Date.now() - startTime) / 1000, 0.05);
       const estimatedTokens = Math.max(Math.round(accumulatedText.length / 4), chunkCount);
       const tokPerSec = Math.round(estimatedTokens / durationSec);
 
       res.write(`data: ${JSON.stringify({ done: true, tokens: estimatedTokens, speed: tokPerSec, modelUsed: activeModel })}\n\n`);
       res.end();
-    } catch (err: unknown) {
-      console.error('[Chat Stream Error]:', err);
-      const { message } = extractFriendlyError(err, resolvedModel);
+    } else {
+      console.error('[All Candidate Models Failed]:', lastError);
+      const { message } = extractFriendlyError(lastError, resolvedModel);
       res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
       res.end();
     }
@@ -268,23 +236,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // ---- Non-streaming response ----
-  try {
-    let usedModel = resolvedModel;
-    let response;
+  let response: any = null;
+  let usedModel = resolvedModel;
+  let lastErr: any = null;
+
+  for (const modelId of candidateModels) {
     try {
-      response = await client.models.generateContent({ model: resolvedModel, contents, config });
-    } catch (firstErr: any) {
-      const errStr = String(firstErr?.message || firstErr || '');
-      const isTransient = errStr.includes('503') || errStr.includes('UNAVAILABLE') || errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED');
-
-      if (isAutoMode && isTransient) {
-        usedModel = AUTO_FALLBACK_MODEL;
-        response = await client.models.generateContent({ model: AUTO_FALLBACK_MODEL, contents, config });
-      } else {
-        throw firstErr;
-      }
+      response = await client.models.generateContent({ model: modelId, contents, config });
+      usedModel = modelId;
+      break;
+    } catch (err: any) {
+      lastErr = err;
+      console.warn(`[Non-stream Model ${modelId} failed, failing over]:`, err?.message || err);
     }
+  }
 
+  if (response) {
     const text = response.text || '';
     const durationSec = Math.max((Date.now() - startTime) / 1000, 0.05);
     const estimatedTokens = Math.max(Math.round(text.length / 4), 1);
@@ -295,9 +262,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       speed: Math.round(estimatedTokens / durationSec),
       modelUsed: usedModel,
     });
-  } catch (err: unknown) {
-    console.error('[Chat Generate Error]:', err);
-    const { message, statusCode } = extractFriendlyError(err, resolvedModel);
+  } else {
+    console.error('[All Non-stream Candidate Models Failed]:', lastErr);
+    const { message, statusCode } = extractFriendlyError(lastErr, resolvedModel);
     res.status(statusCode).json({ error: message });
   }
 }

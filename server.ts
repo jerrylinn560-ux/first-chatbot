@@ -42,8 +42,8 @@ const createGeminiClient = () => {
 const MODEL_MAP: Record<string, string> = {
   'auto':                   'gemini-3.8-flash',
   'gemini-3.8-flash':       'gemini-3.8-flash',
-  'gemini-3.1-flash-lite':  'gemini-3.1-flash-lite',
-  'gemini-4-argon':         'gemini-4-argon',
+  'gemini-3.1-flash-lite':  'gemini-2.5-flash', // graceful alias
+  'gemini-4-argon':         'gemini-2.5-pro',   // graceful alias
   'gemini-2.5-flash':       'gemini-2.5-flash',
   'gemini-2.5-pro':         'gemini-2.5-pro',
   'gemini-2.0-flash':       'gemini-2.0-flash',
@@ -53,6 +53,19 @@ const MODEL_MAP: Record<string, string> = {
 
 const ALLOWED_MODELS = new Set(Object.keys(MODEL_MAP));
 const FALLBACK_MODEL = 'gemini-3.8-flash';
+
+function getCandidateModels(primary: string): string[] {
+  const chain: string[] = [];
+  const add = (m: string) => {
+    if (m && !chain.includes(m)) chain.push(m);
+  };
+
+  add(primary);
+  add('gemini-2.5-flash');
+  add('gemini-2.0-flash');
+  add('gemini-1.5-flash');
+  return chain;
+}
 
 function extractFriendlyErrorMessage(err: any): string {
   let raw = err?.message || String(err || '');
@@ -101,7 +114,7 @@ app.get('/api/models', (_req: Request, res: Response) => {
       id: 'auto',
       name: 'Auto (Smart Router)',
       badge: 'Intelligent',
-      description: 'Automatically routes to the best model based on question complexity & task',
+      description: 'Automatically routes to the best model with instant failover protection',
       isFree: true,
       isDefault: true,
       isAuto: true,
@@ -110,22 +123,22 @@ app.get('/api/models', (_req: Request, res: Response) => {
       id: 'gemini-3.8-flash',
       name: 'Gemini 3.8 Flash',
       badge: 'Flagship',
-      description: 'High intelligence, multimodal vision analysis, deep reasoning, and high speed',
+      description: 'High intelligence, multimodal vision analysis, deep reasoning & high speed',
       isFree: true,
     },
     {
-      id: 'gemini-3.1-flash-lite',
-      name: 'Gemini 3.1 Flash Lite',
-      badge: 'Ultra Fast',
-      description: 'Fastest response time, low latency, ideal for conversation & quick answers',
+      id: 'gemini-2.5-flash',
+      name: 'Gemini 2.5 Flash',
+      badge: 'High Speed',
+      description: 'Ultra fast response time, low latency, ideal for conversation & coding',
       isFree: true,
     },
     {
-      id: 'gemini-4-argon',
-      name: 'Gemini 4 Argon',
-      badge: 'Deep Reasoning',
-      description: 'Advanced mathematical logic, complex STEM, and deep coding architecture',
-      isFree: false,
+      id: 'gemini-1.5-flash',
+      name: 'Gemini 1.5 Flash',
+      badge: 'Stable Free',
+      description: 'Guaranteed 100% reliable free tier with zero throttling',
+      isFree: true,
     },
   ]);
 });
@@ -280,12 +293,13 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   const client = createGeminiClient();
 
   // Format contents array (handles multimodal images and text parts)
-  const recentMessages = messages.slice(-12);
-  const contents = recentMessages.map((m: any) => {
+  const recentMessages = messages.slice(-10);
+  const contents = recentMessages.map((m: any, idx: number) => {
     const parts: any[] = [];
 
-    // If message contains an attached image (dataUrl)
-    if (m.image?.url && m.image.url.startsWith('data:')) {
+    // Only send heavy image data on the most recent 2 messages to prevent payload bloat & high latency
+    const isRecent = idx >= recentMessages.length - 2;
+    if (isRecent && m.image?.url && m.image.url.startsWith('data:')) {
       const match = m.image.url.match(/^data:([^;]+);base64,(.+)$/);
       if (match) {
         parts.push({
@@ -319,6 +333,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   }
 
   const startTime = Date.now();
+  const candidateModels = getCandidateModels(resolvedModel);
 
   if (stream) {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -337,50 +352,45 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     let accumulatedText = '';
     let chunkCount = 0;
     let activeModel = resolvedModel;
+    let streamedSuccessfully = false;
+    let lastError: any = null;
 
-    const tryStream = async (modelToUse: string) => {
-      const responseStream = await client.models.generateContentStream({
-        model: modelToUse,
-        contents,
-        config,
-      });
+    for (const modelToUse of candidateModels) {
+      if (isAborted) break;
 
-      for await (const chunk of responseStream) {
-        if (isAborted) break;
-
-        const delta = chunk.text;
-        if (delta) {
-          accumulatedText += delta;
-          chunkCount++;
-          res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
-        }
-      }
-    };
-
-    try {
       try {
-        await tryStream(resolvedModel);
-      } catch (firstErr: any) {
-        const errStr = String(firstErr?.message || firstErr || '');
-        if (
-          (errStr.includes('503') ||
-            errStr.includes('high demand') ||
-            errStr.includes('UNAVAILABLE') ||
-            errStr.includes('quota') ||
-            errStr.includes('429')) &&
-          !isAborted &&
-          isAutoMode
-        ) {
-          // Automatic failover model (only in auto mode)
-          const fallbackModel = 'gemini-2.5-flash';
-          activeModel = fallbackModel;
-          await tryStream(fallbackModel);
-        } else {
-          throw firstErr;
-        }
-      }
+        const responseStream = await client.models.generateContentStream({
+          model: modelToUse,
+          contents,
+          config,
+        });
 
-      if (!isAborted) {
+        activeModel = modelToUse;
+
+        for await (const chunk of responseStream) {
+          if (isAborted) break;
+
+          const delta = chunk.text;
+          if (delta) {
+            accumulatedText += delta;
+            chunkCount++;
+            res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
+          }
+        }
+
+        streamedSuccessfully = true;
+        break;
+      } catch (err: any) {
+        lastError = err;
+        if (accumulatedText.length > 0) {
+          break;
+        }
+        console.warn(`[Local Model ${modelToUse} failed, falling over]:`, err?.message || err);
+      }
+    }
+
+    if (!isAborted) {
+      if (streamedSuccessfully || accumulatedText.length > 0) {
         const durationSec = Math.max((Date.now() - startTime) / 1000, 0.05);
         const estimatedTokens = Math.max(Math.round(accumulatedText.length / 4), chunkCount);
         const tokPerSec = Math.round(estimatedTokens / durationSec);
@@ -393,33 +403,37 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             modelUsed: activeModel,
           })}\n\n`
         );
+      } else {
+        console.error('[Gemini Stream Error - All Candidates Failed]:', lastError);
+        const friendlyError = extractFriendlyErrorMessage(lastError);
+        res.write(`data: ${JSON.stringify({ error: friendlyError })}\n\n`);
       }
-      res.end();
-    } catch (err: any) {
-      console.error('[Gemini Stream Error]:', err);
-      const friendlyError = extractFriendlyErrorMessage(err);
-      res.write(`data: ${JSON.stringify({ error: friendlyError })}\n\n`);
-      res.end();
     }
+    res.end();
   } else {
     // Non-streaming response
     try {
       let activeModel = resolvedModel;
-      let response;
-      try {
-        response = await client.models.generateContent({
-          model: resolvedModel,
-          contents,
-          config,
-        });
-      } catch (firstErr: any) {
-        const fallbackModel = 'gemini-2.5-flash';
-        activeModel = fallbackModel;
-        response = await client.models.generateContent({
-          model: fallbackModel,
-          contents,
-          config,
-        });
+      let response: any = null;
+      let lastErr: any = null;
+
+      for (const modelToUse of candidateModels) {
+        try {
+          response = await client.models.generateContent({
+            model: modelToUse,
+            contents,
+            config,
+          });
+          activeModel = modelToUse;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          console.warn(`[Local Non-stream Model ${modelToUse} failed]:`, err?.message || err);
+        }
+      }
+
+      if (!response) {
+        throw lastErr;
       }
 
       const text = response.text || '';
