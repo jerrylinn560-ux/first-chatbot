@@ -226,3 +226,6 @@ if (!process.env.VERCEL) {
 }
 
 export default app;
+git add .
+git commit -m "fix: make Vercel serverless functions self-contained to eliminate 500 module error"
+git push
