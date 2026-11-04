@@ -1,14 +1,15 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
-import { GoogleGenAI } from '@google/genai';
 import {
-  buildCompositeSystemInstruction,
-  detectRepeatedQuestion,
-} from './src/lib/ai/system-instructions';
-import { resolveAutoModel } from './src/lib/ai/model-router';
+  UI_MODEL_LIST,
+  executeAIChatStream,
+  executeAIChatUnary,
+  parseAndCategorizeError,
+  runHealthDiagnostics,
+} from './src/lib/ai/ai-service';
 
-// Load environment variables
+// Load environment variables (.env.local overrides .env)
 dotenv.config({ path: '.env.local' });
 dotenv.config();
 
@@ -22,131 +23,24 @@ const getApiKey = (): string => {
   return process.env.GEMINI_API_KEY || '';
 };
 
-const createGeminiClient = () => {
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured. Set it in your deployment environment.');
-  }
-
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-};
-
-// Current Gemini model IDs (verified against Google Generative AI API)
-const MODEL_MAP: Record<string, string> = {
-  'auto':                   'gemini-3.8-flash',
-  'gemini-3.8-flash':       'gemini-3.8-flash',
-  'gemini-3.1-flash-lite':  'gemini-2.5-flash', // graceful alias
-  'gemini-4-argon':         'gemini-2.5-pro',   // graceful alias
-  'gemini-2.5-flash':       'gemini-2.5-flash',
-  'gemini-2.5-pro':         'gemini-2.5-pro',
-  'gemini-2.0-flash':       'gemini-2.0-flash',
-  'gemini-2.0-flash-lite':  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash':       'gemini-1.5-flash',
-};
-
-const ALLOWED_MODELS = new Set(Object.keys(MODEL_MAP));
-const FALLBACK_MODEL = 'gemini-3.8-flash';
-
-function getCandidateModels(primary: string): string[] {
-  const chain: string[] = [];
-  const add = (m: string) => {
-    if (m && !chain.includes(m)) chain.push(m);
-  };
-
-  add(primary);
-  add('gemini-2.5-flash');
-  add('gemini-2.0-flash');
-  add('gemini-1.5-flash');
-  return chain;
-}
-
-function extractFriendlyErrorMessage(err: any): string {
-  let raw = err?.message || String(err || '');
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed.error?.message) {
-      try {
-        const nested = JSON.parse(parsed.error.message);
-        if (nested.error?.message) raw = nested.error.message;
-      } catch {
-        raw = parsed.error.message;
-      }
-    }
-  } catch {}
-
-  if (raw.includes('503') || raw.includes('high demand') || raw.includes('UNAVAILABLE')) {
-    return 'The AI model is experiencing high demand. Please try again in a moment.';
-  }
-  if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota')) {
-    return 'Free tier rate limit reached. Please wait a few seconds before retrying.';
-  }
-  if (raw.includes('API_KEY_INVALID') || raw.includes('API key not valid')) {
-    return 'Invalid Gemini API key. Please check your GEMINI_API_KEY in .env.local.';
-  }
-  return raw || 'An unexpected error occurred while processing your request.';
-}
-
 // ----------------- API ENDPOINTS -----------------
 
-// Health check endpoint
-app.get('/api/health', (_req: Request, res: Response) => {
+// Live Health & Diagnostics endpoint
+app.get('/api/health', async (_req: Request, res: Response) => {
   const apiKey = getApiKey();
-  res.json({
-    status: 'healthy',
-    configured: Boolean(apiKey && apiKey.length > 5),
-    defaultModel: 'gemini-3.8-flash',
-    timestamp: Date.now(),
-  });
+  const report = await runHealthDiagnostics(apiKey);
+  const status = report.status === 'healthy' ? 200 : report.status === 'degraded' ? 200 : 503;
+  res.status(status).json(report);
 });
 
-// Models list endpoint
+// Models list endpoint (sourced from centralized model registry)
 app.get('/api/models', (_req: Request, res: Response) => {
-  res.json([
-    {
-      id: 'auto',
-      name: 'Auto (Smart Router)',
-      badge: 'Intelligent',
-      description: 'Automatically routes to the best model with instant failover protection',
-      isFree: true,
-      isDefault: true,
-      isAuto: true,
-    },
-    {
-      id: 'gemini-3.8-flash',
-      name: 'Gemini 3.8 Flash',
-      badge: 'Flagship',
-      description: 'High intelligence, multimodal vision analysis, deep reasoning & high speed',
-      isFree: true,
-    },
-    {
-      id: 'gemini-2.5-flash',
-      name: 'Gemini 2.5 Flash',
-      badge: 'High Speed',
-      description: 'Ultra fast response time, low latency, ideal for conversation & coding',
-      isFree: true,
-    },
-    {
-      id: 'gemini-1.5-flash',
-      name: 'Gemini 1.5 Flash',
-      badge: 'Stable Free',
-      description: 'Guaranteed 100% reliable free tier with zero throttling',
-      isFree: true,
-    },
-  ]);
+  res.json(UI_MODEL_LIST);
 });
 
-// Dedicated Real AI Image Generation endpoint
+// Dedicated AI Image Generation endpoint (Flux / Pollinations AI)
 app.post('/api/images/generate', async (req: Request, res: Response) => {
-  const { prompt, aspectRatio = '1:1', style = 'photorealistic', provider = 'pollinations' } =
-    req.body;
+  const { prompt, aspectRatio = '1:1', style = 'photorealistic' } = req.body || {};
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     res.status(400).json({ error: 'Prompt is required for image generation.' });
@@ -156,7 +50,6 @@ app.post('/api/images/generate', async (req: Request, res: Response) => {
   const cleanPrompt = prompt.trim();
   const styledPrompt = `${cleanPrompt}, ${style} style, high quality, highly detailed`;
 
-  // Calculate pixel dimensions based on aspect ratio
   let width = 1024;
   let height = 1024;
   if (aspectRatio === '16:9') {
@@ -170,54 +63,6 @@ app.post('/api/images/generate', async (req: Request, res: Response) => {
     height = 768;
   }
 
-  // Attempt Google Gemini Image if requested
-  if (provider === 'gemini') {
-    try {
-      if (!getApiKey()) {
-        res.status(503).json({
-          error: 'GEMINI_API_KEY is not configured. Add it to the Vercel project environment variables.',
-        });
-        return;
-      }
-
-      const client = createGeminiClient();
-      const geminiRes = await client.models.generateContent({
-        model: 'gemini-2.0-flash',
-        // Note: Native Gemini image generation uses imagen-3.0-generate-002,
-        // but for simplicity we use Pollinations as primary. This gemini path is a fallback.
-        contents: styledPrompt,
-        config: {
-          imageConfig: {
-            aspectRatio: aspectRatio as any,
-          },
-        },
-      });
-
-      let base64Img = '';
-      for (const part of geminiRes.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData?.data) {
-          base64Img = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-          break;
-        }
-      }
-
-      if (base64Img) {
-        res.json({
-          imageUrl: base64Img,
-          prompt: cleanPrompt,
-          aspectRatio,
-          style,
-          provider: 'Google Gemini Image',
-          createdAt: Date.now(),
-        });
-        return;
-      }
-    } catch (geminiErr: any) {
-      console.warn('Gemini image generation unavailable, falling back to AI Engine:', geminiErr?.message);
-    }
-  }
-
-  // Pollinations AI Real-Time Image Generation Engine (SDXL / Flux)
   try {
     const encodedPrompt = encodeURIComponent(styledPrompt);
     const seed = Math.floor(Math.random() * 1000000);
@@ -237,103 +82,43 @@ app.post('/api/images/generate', async (req: Request, res: Response) => {
   }
 });
 
-// Chat completion endpoint (with streaming SSE, multimodal vision, repeated-question & personality styles)
+// Chat completion endpoint (with streaming SSE, multimodal vision & single shared AI logic)
 app.post('/api/chat', async (req: Request, res: Response) => {
+  const apiKey = getApiKey();
+  if (!apiKey || apiKey.length < 8) {
+    res.status(503).json({
+      error: 'GEMINI_API_KEY is not configured. Add it to your .env.local file.',
+      category: 'auth',
+    });
+    return;
+  }
+
   const {
     messages,
-    model: requestedModel = 'auto',
+    model = 'auto',
     responseStyle = 'balanced',
     temperature = 0.7,
     systemInstruction,
     searchGrounding = false,
     stream = true,
-  } = req.body;
+  } = req.body || {};
 
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
-    res.status(400).json({ error: 'Messages array is required and must not be empty.' });
-    return;
-  }
-
-  const latestMsg = messages[messages.length - 1];
-  const hasImageAttachment = Boolean(latestMsg?.image?.url);
-  const promptText = latestMsg?.content || '';
-
-  // Smart Model Routing — translate UI model name to real Gemini API model ID
-  let resolvedModel = MODEL_MAP['gemini-3.8-flash'];
-  const isAutoMode = requestedModel === 'auto';
-  if (isAutoMode) {
-    const autoResolved = resolveAutoModel(promptText, hasImageAttachment);
-    resolvedModel = MODEL_MAP[autoResolved] || MODEL_MAP['gemini-3.8-flash'];
-  } else if (ALLOWED_MODELS.has(requestedModel)) {
-    resolvedModel = MODEL_MAP[requestedModel];
-  } else {
     res.status(400).json({
-      error: `Unknown model: "${requestedModel}". Supported models: ${Array.from(ALLOWED_MODELS).filter(k => k !== 'auto').join(', ')}`,
+      error: 'Messages array is required and must not be empty.',
+      category: 'invalid_request',
     });
     return;
   }
 
-  // Detect repeated question in this conversation
-  const repeatedInfo = detectRepeatedQuestion(promptText, messages.slice(0, -1));
+  const requestId = `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  let isClientClosed = false;
 
-  // Build composite personality & style instructions
-  const compositeInstruction = buildCompositeSystemInstruction(
-    responseStyle,
-    systemInstruction,
-    repeatedInfo
-  );
-
-  if (!getApiKey()) {
-    res.status(503).json({
-      error: 'GEMINI_API_KEY is not configured. Add it to the Vercel project environment variables.',
-    });
-    return;
-  }
-
-  const client = createGeminiClient();
-
-  // Format contents array (handles multimodal images and text parts)
-  const recentMessages = messages.slice(-10);
-  const contents = recentMessages.map((m: any, idx: number) => {
-    const parts: any[] = [];
-
-    // Only send heavy image data on the most recent 2 messages to prevent payload bloat & high latency
-    const isRecent = idx >= recentMessages.length - 2;
-    if (isRecent && m.image?.url && m.image.url.startsWith('data:')) {
-      const match = m.image.url.match(/^data:([^;]+);base64,(.+)$/);
-      if (match) {
-        parts.push({
-          inlineData: {
-            mimeType: match[1],
-            data: match[2],
-          },
-        });
-      }
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      isClientClosed = true;
     }
-
-    if (m.content) {
-      parts.push({ text: String(m.content) });
-    } else if (parts.length === 0) {
-      parts.push({ text: ' ' });
-    }
-
-    return {
-      role: m.role === 'model' || m.role === 'assistant' ? 'model' : 'user',
-      parts,
-    };
   });
-
-  const config: Record<string, any> = {
-    temperature: Math.max(0, Math.min(1, Number(temperature) || 0.7)),
-    systemInstruction: compositeInstruction,
-  };
-
-  if (searchGrounding) {
-    config.tools = [{ googleSearch: {} }];
-  }
-
-  const startTime = Date.now();
-  const candidateModels = getCandidateModels(resolvedModel);
 
   if (stream) {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -342,115 +127,70 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
 
-    let isAborted = false;
-    res.on('close', () => {
-      if (!res.writableEnded) {
-        isAborted = true;
-      }
+    await executeAIChatStream({
+      apiKey,
+      messages,
+      model,
+      responseStyle,
+      temperature,
+      systemInstruction,
+      searchGrounding,
+      requestId,
+      isAborted: () => isClientClosed,
+      onChunk: (delta: string) => {
+        if (!isClientClosed) {
+          res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
+        }
+      },
+      onDone: (telemetry) => {
+        if (!isClientClosed) {
+          res.write(
+            `data: ${JSON.stringify({
+              done: true,
+              tokens: telemetry.tokens,
+              speed: telemetry.speed,
+              modelUsed: telemetry.modelUsed,
+              durationMs: telemetry.durationMs,
+              ttftMs: telemetry.ttftMs,
+            })}\n\n`
+          );
+          res.end();
+        }
+      },
+      onError: (err) => {
+        if (!isClientClosed) {
+          res.write(
+            `data: ${JSON.stringify({
+              error: err.message,
+              category: err.category,
+              model: err.modelId,
+              statusCode: err.statusCode,
+            })}\n\n`
+          );
+          res.end();
+        }
+      },
     });
-
-    let accumulatedText = '';
-    let chunkCount = 0;
-    let activeModel = resolvedModel;
-    let streamedSuccessfully = false;
-    let lastError: any = null;
-
-    for (const modelToUse of candidateModels) {
-      if (isAborted) break;
-
-      try {
-        const responseStream = await client.models.generateContentStream({
-          model: modelToUse,
-          contents,
-          config,
-        });
-
-        activeModel = modelToUse;
-
-        for await (const chunk of responseStream) {
-          if (isAborted) break;
-
-          const delta = chunk.text;
-          if (delta) {
-            accumulatedText += delta;
-            chunkCount++;
-            res.write(`data: ${JSON.stringify({ text: delta })}\n\n`);
-          }
-        }
-
-        streamedSuccessfully = true;
-        break;
-      } catch (err: any) {
-        lastError = err;
-        if (accumulatedText.length > 0) {
-          break;
-        }
-        console.warn(`[Local Model ${modelToUse} failed, falling over]:`, err?.message || err);
-      }
-    }
-
-    if (!isAborted) {
-      if (streamedSuccessfully || accumulatedText.length > 0) {
-        const durationSec = Math.max((Date.now() - startTime) / 1000, 0.05);
-        const estimatedTokens = Math.max(Math.round(accumulatedText.length / 4), chunkCount);
-        const tokPerSec = Math.round(estimatedTokens / durationSec);
-
-        res.write(
-          `data: ${JSON.stringify({
-            done: true,
-            tokens: estimatedTokens,
-            speed: tokPerSec,
-            modelUsed: activeModel,
-          })}\n\n`
-        );
-      } else {
-        console.error('[Gemini Stream Error - All Candidates Failed]:', lastError);
-        const friendlyError = extractFriendlyErrorMessage(lastError);
-        res.write(`data: ${JSON.stringify({ error: friendlyError })}\n\n`);
-      }
-    }
-    res.end();
   } else {
-    // Non-streaming response
     try {
-      let activeModel = resolvedModel;
-      let response: any = null;
-      let lastErr: any = null;
-
-      for (const modelToUse of candidateModels) {
-        try {
-          response = await client.models.generateContent({
-            model: modelToUse,
-            contents,
-            config,
-          });
-          activeModel = modelToUse;
-          break;
-        } catch (err: any) {
-          lastErr = err;
-          console.warn(`[Local Non-stream Model ${modelToUse} failed]:`, err?.message || err);
-        }
-      }
-
-      if (!response) {
-        throw lastErr;
-      }
-
-      const text = response.text || '';
-      const durationSec = Math.max((Date.now() - startTime) / 1000, 0.05);
-      const estimatedTokens = Math.max(Math.round(text.length / 4), 1);
-      const tokPerSec = Math.round(estimatedTokens / durationSec);
-
-      res.json({
-        text,
-        tokens: estimatedTokens,
-        speed: tokPerSec,
-        modelUsed: activeModel,
+      const result = await executeAIChatUnary({
+        apiKey,
+        messages,
+        model,
+        responseStyle,
+        temperature,
+        systemInstruction,
+        searchGrounding,
+        requestId,
       });
-    } catch (err: any) {
-      console.error('[Gemini Generate Error]:', err);
-      const friendlyError = extractFriendlyErrorMessage(err);
-      res.status(500).json({ error: friendlyError });
+      res.json(result);
+    } catch (err: unknown) {
+      const formatted = parseAndCategorizeError(err, model);
+      res.status(formatted.statusCode).json({
+        error: formatted.message,
+        category: formatted.category,
+        model: formatted.modelId,
+      });
     }
   }
 });
@@ -474,7 +214,7 @@ async function startServer() {
   }
 
   app.listen(port, '0.0.0.0', () => {
-    console.log(`🚀 ChatGPT Assistant server running on http://0.0.0.0:${port}`);
+    console.log(`🚀 AI Studio Pro Chatbot running on http://0.0.0.0:${port}`);
   });
 }
 

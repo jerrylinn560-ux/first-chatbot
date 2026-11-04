@@ -1,36 +1,16 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { UI_MODEL_LIST } from '../src/lib/ai/ai-service';
 
 export default function handler(_req: VercelRequest, res: VercelResponse) {
-  res.status(200).json([
-    {
-      id: 'auto',
-      name: 'Auto (Smart Router)',
-      badge: 'Intelligent',
-      description: 'Automatically routes to the best model with instant failover protection',
-      isFree: true,
-      isDefault: true,
-      isAuto: true,
-    },
-    {
-      id: 'gemini-3.8-flash',
-      name: 'Gemini 3.8 Flash',
-      badge: 'Flagship',
-      description: 'High intelligence, multimodal vision analysis, deep reasoning & high speed',
-      isFree: true,
-    },
-    {
-      id: 'gemini-2.5-flash',
-      name: 'Gemini 2.5 Flash',
-      badge: 'High Speed',
-      description: 'Ultra fast response time, low latency, ideal for conversation & coding',
-      isFree: true,
-    },
-    {
-      id: 'gemini-1.5-flash',
-      name: 'Gemini 1.5 Flash',
-      badge: 'Stable Free',
-      description: 'Guaranteed 100% reliable free tier with zero throttling',
-      isFree: true,
-    },
-  ]);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=600');
+
+  if (_req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
+  res.status(200).json(UI_MODEL_LIST);
 }

@@ -1,11 +1,20 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { runHealthDiagnostics } from '../src/lib/ai/ai-service';
 
-export default function handler(_req: VercelRequest, res: VercelResponse) {
+export default async function handler(_req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'no-cache, no-store');
+
+  if (_req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+
   const apiKey = process.env.GEMINI_API_KEY || '';
-  res.status(200).json({
-    status: 'healthy',
-    configured: Boolean(apiKey && apiKey.length > 10),
-    defaultModel: 'gemini-3.8-flash',
-    timestamp: Date.now(),
-  });
+  const report = await runHealthDiagnostics(apiKey);
+
+  const httpStatus = report.status === 'healthy' ? 200 : report.status === 'degraded' ? 200 : 503;
+  res.status(httpStatus).json(report);
 }
