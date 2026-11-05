@@ -97,17 +97,17 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
             <input
               id="contextSlider"
               type="range"
-              min="4"
-              max="20"
+              min="6"
+              max="50"
               step="2"
               value={maxContextTurns}
               onChange={(e) => setMaxContextTurns(parseInt(e.target.value, 10))}
               className="w-full accent-[#10a37f] cursor-pointer"
             />
             <div className="flex justify-between text-[#8e8e8e] text-[10px]">
-              <span>Fastest (4 turns)</span>
-              <span>Standard (10 turns)</span>
-              <span>Deep (20 turns)</span>
+              <span>Fast (6 turns)</span>
+              <span>Standard (30 turns)</span>
+              <span>Deep (50 turns)</span>
             </div>
           </div>
 

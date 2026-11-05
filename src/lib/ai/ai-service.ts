@@ -3,7 +3,7 @@ import { ModelOption, ResponseStyle } from '../../types/chat';
 import { buildCompositeSystemInstruction, detectRepeatedQuestion } from './system-instructions';
 
 // ============================================================================
-// 1. CENTRALIZED MODEL REGISTRY
+// 1. CENTRALIZED MODEL REGISTRY & BACKWARD COMPATIBILITY
 // ============================================================================
 
 export interface ModelDefinition extends ModelOption {
@@ -17,11 +17,21 @@ export interface ModelDefinition extends ModelOption {
  * Verified live against Google Gemini Generative Language API.
  */
 export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
+  'gemini-3.5-flash-lite': {
+    id: 'gemini-3.5-flash-lite',
+    name: 'Gemini 3.5 Flash Lite',
+    badge: 'Ultra Fast & Free',
+    description: 'Ultra-low latency, highly resilient free-tier model optimal for continuous multi-turn conversations',
+    isFree: true,
+    isDefault: false,
+    apiModelId: 'gemini-3.5-flash-lite',
+    isAvailable: true,
+  },
   'gemini-3.5-flash': {
     id: 'gemini-3.5-flash',
     name: 'Gemini 3.5 Flash',
-    badge: 'Fast & Stable',
-    description: 'High throughput, low latency, balanced intelligence & reliable availability',
+    badge: 'Fast & Balanced',
+    description: 'High throughput, balanced intelligence & multimodal reasoning',
     isFree: true,
     isDefault: false,
     apiModelId: 'gemini-3.5-flash',
@@ -30,7 +40,7 @@ export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
   'gemini-3.8-flash': {
     id: 'gemini-3.8-flash',
     name: 'Gemini 3.8 Flash',
-    badge: 'Flagship',
+    badge: 'Flagship Reasoning',
     description: 'Next-gen multimodal reasoning, vision, code synthesis & deep thought',
     isFree: true,
     isDefault: false,
@@ -38,28 +48,19 @@ export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
     isAvailable: true,
     notes: 'May experience upstream capacity spikes during peak Google hours',
   },
-  'gemini-3.1-flash-lite': {
-    id: 'gemini-3.1-flash-lite',
-    name: 'Gemini 3.1 Flash Lite',
-    badge: 'Ultra Fast',
-    description: 'Fastest response time, minimal latency, ideal for conversation & quick answers',
-    isFree: true,
-    isDefault: false,
-    apiModelId: 'gemini-3.1-flash-lite',
-    isAvailable: true,
-  },
 };
 
 /**
  * Model aliases for backward compatibility (maps legacy or UI aliases to actual supported IDs)
  */
 export const MODEL_ALIASES: Record<string, string> = {
-  'gemini-2.5-flash': 'gemini-3.5-flash',
-  'gemini-2.0-flash': 'gemini-3.5-flash',
-  'gemini-1.5-flash': 'gemini-3.5-flash',
-  'gemini-2.0-flash-lite': 'gemini-3.1-flash-lite',
+  'gemini-3.1-flash-lite': 'gemini-3.5-flash-lite',
+  'gemini-2.5-flash': 'gemini-3.5-flash-lite',
+  'gemini-2.0-flash': 'gemini-3.5-flash-lite',
+  'gemini-1.5-flash': 'gemini-3.5-flash-lite',
+  'gemini-2.0-flash-lite': 'gemini-3.5-flash-lite',
   'gemini-flash-latest': 'gemini-3.5-flash',
-  'gemini-flash-lite-latest': 'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest': 'gemini-3.5-flash-lite',
   'gemini-4-argon': 'gemini-3.8-flash',
 };
 
@@ -70,7 +71,7 @@ export const AUTO_MODEL_OPTION: ModelOption = {
   id: 'auto',
   name: 'Auto (Smart Router)',
   badge: 'Intelligent',
-  description: 'Automatically routes to the best model with instant 503 failover',
+  description: 'Automatically routes to the best model with instant free-tier failover',
   isFree: true,
   isDefault: true,
   isAuto: true,
@@ -81,9 +82,9 @@ export const AUTO_MODEL_OPTION: ModelOption = {
  */
 export const UI_MODEL_LIST: ModelOption[] = [
   AUTO_MODEL_OPTION,
+  MODEL_REGISTRY['gemini-3.5-flash-lite'],
   MODEL_REGISTRY['gemini-3.5-flash'],
   MODEL_REGISTRY['gemini-3.8-flash'],
-  MODEL_REGISTRY['gemini-3.1-flash-lite'],
 ];
 
 /**
@@ -102,7 +103,7 @@ export function isSupportedModel(modelId: string): boolean {
  */
 export function resolveTargetApiModel(requestedModel: string): string | null {
   if (requestedModel === 'auto') {
-    return MODEL_REGISTRY['gemini-3.5-flash'].apiModelId;
+    return MODEL_REGISTRY['gemini-3.5-flash-lite'].apiModelId;
   }
   if (MODEL_REGISTRY[requestedModel]) {
     return MODEL_REGISTRY[requestedModel].apiModelId;
@@ -154,11 +155,11 @@ export function resolveAutoModel(prompt: string, hasImage = false): string {
   switch (category) {
     case 'vision':
     case 'reasoning':
-      return 'gemini-3.8-flash';
+      return 'gemini-3.5-flash';
     case 'fast':
     case 'general':
     default:
-      return 'gemini-3.5-flash';
+      return 'gemini-3.5-flash-lite';
   }
 }
 
@@ -176,28 +177,55 @@ export interface FormattedAIError {
   rawDetails?: string;
 }
 
+/**
+ * Parses, sanitizes, and categorizes errors returned by Google GenAI.
+ * CRITICAL: Quota/Rate Limit (429) is evaluated BEFORE any generic "billing" keyword check,
+ * because Google's 429 error messages frequently include the sentence:
+ * "You exceeded your current quota, please check your plan and billing details."
+ */
 export function parseAndCategorizeError(err: unknown, modelId: string): FormattedAIError {
   let raw = (err as any)?.message || String(err || '');
-  let status = Number((err as any)?.status || (err as any)?.statusCode || 500);
+  let status = Number((err as any)?.status || (err as any)?.statusCode || (err as any)?.code || 500);
+  let rpcStatus = '';
+  let retryDelaySec: number | undefined;
+  let isDailyQuotaExhausted = false;
 
-  // Attempt to parse nested JSON error responses from Google RPC
+  // Extract nested JSON error payload if present
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed.error?.message) {
-      raw = parsed.error.message;
+    let parsed: any = null;
+    if (typeof raw === 'string' && (raw.startsWith('{') || raw.includes('{"error"'))) {
+      const jsonStart = raw.indexOf('{');
+      const jsonEnd = raw.lastIndexOf('}');
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+      }
+    } else if ((err as any)?.error) {
+      parsed = err;
+    }
+
+    if (parsed?.error) {
       if (parsed.error.code) status = Number(parsed.error.code);
-    }
-    // Handle double-nested error strings
-    if (typeof raw === 'string' && raw.startsWith('{')) {
-      try {
-        const nested = JSON.parse(raw);
-        if (nested.error?.message) {
-          raw = nested.error.message;
-          if (nested.error.code) status = Number(nested.error.code);
+      if (parsed.error.status) rpcStatus = String(parsed.error.status);
+      if (parsed.error.message) raw = parsed.error.message;
+
+      if (Array.isArray(parsed.error.details)) {
+        for (const detail of parsed.error.details) {
+          if (detail['@type']?.includes('RetryInfo') && detail.retryDelay) {
+            const match = String(detail.retryDelay).match(/^(\d+)/);
+            if (match) retryDelaySec = parseInt(match[1], 10);
+          }
+          if (detail['@type']?.includes('QuotaFailure')) {
+            const desc = JSON.stringify(detail).toLowerCase();
+            if (desc.includes('per day') || desc.includes('daily')) {
+              isDailyQuotaExhausted = true;
+            }
+          }
         }
-      } catch { }
+      }
     }
-  } catch { }
+  } catch {
+    // If JSON parsing fails, retain raw string
+  }
 
   const lowerRaw = raw.toLowerCase();
 
@@ -205,6 +233,8 @@ export function parseAndCategorizeError(err: unknown, modelId: string): Formatte
   if (
     status === 401 ||
     status === 403 ||
+    rpcStatus === 'UNAUTHENTICATED' ||
+    rpcStatus === 'PERMISSION_DENIED' ||
     lowerRaw.includes('api_key_invalid') ||
     lowerRaw.includes('api key not valid') ||
     lowerRaw.includes('unauthenticated') ||
@@ -220,50 +250,74 @@ export function parseAndCategorizeError(err: unknown, modelId: string): Formatte
     };
   }
 
-  // 2. Billing / Payment errors (402)
-  if (
-    status === 402 ||
-    lowerRaw.includes('billing') ||
-    lowerRaw.includes('payment') ||
-    lowerRaw.includes('pay-as-you-go')
-  ) {
-    return {
-      message: 'Gemini API billing error: Payment or billing account issue. Please verify your Google Cloud / AI Studio billing status.',
-      statusCode: 402,
-      category: 'billing',
-      modelId,
-      isRetryable: false,
-      rawDetails: raw,
-    };
-  }
-
-  // 3. Quota / Rate limit errors (429)
+  // 2. Quota / Rate limit errors (429 / RESOURCE_EXHAUSTED)
+  // MUST be checked before billing check to prevent false 402 billing errors!
   if (
     status === 429 ||
+    rpcStatus === 'RESOURCE_EXHAUSTED' ||
     lowerRaw.includes('resource_exhausted') ||
-    lowerRaw.includes('quota') ||
-    lowerRaw.includes('rate limit')
+    lowerRaw.includes('quota exceeded') ||
+    lowerRaw.includes('exceeded your current quota') ||
+    lowerRaw.includes('rate limit') ||
+    lowerRaw.includes('too many requests')
   ) {
+    if (isDailyQuotaExhausted || lowerRaw.includes('per day limit exceeded') || (retryDelaySec && retryDelaySec > 60)) {
+      return {
+        message: `Daily Free Tier request quota for "${modelId}" has been reached. Please switch to Gemini 3.5 Flash Lite or wait for your daily quota to reset.`,
+        statusCode: 429,
+        category: 'quota',
+        modelId,
+        isRetryable: false,
+        retryAfterSec: retryDelaySec,
+        rawDetails: raw,
+      };
+    }
+
     return {
-      message: `Rate limit or quota exceeded for "${modelId}". Please wait a few seconds before retrying, or switch to Gemini 3.5 Flash.`,
+      message: `Temporary rate limit reached for "${modelId}". Waiting for cooldown...`,
       statusCode: 429,
       category: 'quota',
       modelId,
-      isRetryable: false,
+      isRetryable: true,
+      retryAfterSec: retryDelaySec || 3,
       rawDetails: raw,
     };
   }
 
-  // 4. Model not found / unavailable (404)
+  // 3. Temporary Overloaded / High Demand / Service Unavailable (503 / 502 / 504 / UNAVAILABLE)
+  if (
+    status === 503 ||
+    status === 502 ||
+    status === 504 ||
+    rpcStatus === 'UNAVAILABLE' ||
+    rpcStatus === 'DEADLINE_EXCEEDED' ||
+    lowerRaw.includes('unavailable') ||
+    lowerRaw.includes('high demand') ||
+    lowerRaw.includes('overloaded') ||
+    lowerRaw.includes('temporarily unavailable')
+  ) {
+    return {
+      message: `Model "${modelId}" is currently experiencing high demand upstream at Google. Retrying or switching to an active model...`,
+      statusCode: 503,
+      category: 'overloaded',
+      modelId,
+      isRetryable: true,
+      retryAfterSec: 2,
+      rawDetails: raw,
+    };
+  }
+
+  // 4. Model not found / unavailable (404 / NOT_FOUND)
   if (
     status === 404 ||
+    rpcStatus === 'NOT_FOUND' ||
     lowerRaw.includes('not_found') ||
     lowerRaw.includes('not found') ||
     lowerRaw.includes('no longer available') ||
     lowerRaw.includes('does not exist')
   ) {
     return {
-      message: `Model "${modelId}" is not available on this API key or API tier. Please select Gemini 3.5 Flash or Gemini 3.1 Flash Lite.`,
+      message: `Model "${modelId}" is no longer available at Google API. Please select Gemini 3.5 Flash Lite or Gemini 3.5 Flash.`,
       statusCode: 404,
       category: 'model_not_found',
       modelId,
@@ -272,27 +326,15 @@ export function parseAndCategorizeError(err: unknown, modelId: string): Formatte
     };
   }
 
-  // 5. Overloaded / Temporary Service Unavailable (503)
+  // 5. Bad Request / Invalid Arguments (400 / INVALID_ARGUMENT)
   if (
-    status === 503 ||
-    lowerRaw.includes('unavailable') ||
-    lowerRaw.includes('high demand') ||
-    lowerRaw.includes('overloaded')
+    status === 400 ||
+    rpcStatus === 'INVALID_ARGUMENT' ||
+    lowerRaw.includes('invalid_argument') ||
+    lowerRaw.includes('bad request')
   ) {
     return {
-      message: `The model "${modelId}" is currently experiencing high demand upstream at Google. Please retry in a moment or select Gemini 3.5 Flash.`,
-      statusCode: 503,
-      category: 'overloaded',
-      modelId,
-      isRetryable: true,
-      rawDetails: raw,
-    };
-  }
-
-  // 6. Bad Request / Invalid Arguments (400)
-  if (status === 400 || lowerRaw.includes('invalid_argument') || lowerRaw.includes('bad request')) {
-    return {
-      message: `Invalid request sent to AI: ${raw.slice(0, 160)}`,
+      message: `Invalid request payload sent to Gemini API: ${raw.slice(0, 160)}`,
       statusCode: 400,
       category: 'invalid_request',
       modelId,
@@ -301,9 +343,27 @@ export function parseAndCategorizeError(err: unknown, modelId: string): Formatte
     };
   }
 
+  // 6. Genuine Billing / Payment Account Disabled (402 / PAYMENT_REQUIRED)
+  // Strictly applies ONLY when status is explicitly 402 or billing account is disabled
+  if (
+    status === 402 ||
+    rpcStatus === 'PAYMENT_REQUIRED' ||
+    lowerRaw.includes('billing account is disabled') ||
+    lowerRaw.includes('billing account has been closed')
+  ) {
+    return {
+      message: 'Google Cloud billing error: Your Google Cloud billing account is disabled or requires verification in Google Cloud Console.',
+      statusCode: 402,
+      category: 'billing',
+      modelId,
+      isRetryable: false,
+      rawDetails: raw,
+    };
+  }
+
   // 7. Internal / Unclassified (500)
   return {
-    message: raw && raw.length < 200 ? raw : `An unexpected error occurred while communicating with model "${modelId}".`,
+    message: raw && raw.length < 200 ? raw : `An unexpected upstream error occurred while communicating with model "${modelId}".`,
     statusCode: 500,
     category: 'internal',
     modelId,
@@ -313,15 +373,162 @@ export function parseAndCategorizeError(err: unknown, modelId: string): Formatte
 }
 
 // ============================================================================
-// 4. CLIENT CACHING & CONVERSATION PREPARATION
+// 4. MULTI-TURN CONVERSATION HISTORY MANAGEMENT & SANITIZATION
+// ============================================================================
+
+export interface RawChatMessage {
+  role: string;
+  content?: string;
+  image?: { url?: string; mimeType?: string; name?: string };
+  status?: string;
+}
+
+export interface GeminiContentPart {
+  text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
+}
+
+export interface GeminiContentItem {
+  role: 'user' | 'model';
+  parts: GeminiContentPart[];
+}
+
+/**
+ * Robustly sanitizes and formats conversation history for Google Gemini API:
+ * 1. Excludes messages with status === 'error' or empty placeholder messages.
+ * 2. Normalizes roles to 'user' | 'model'.
+ * 3. Enforces strict alternation (merges consecutive user or model turns).
+ * 4. Guarantees history starts with role 'user' and ends with role 'user'.
+ * 5. Strips heavy base64 images from historical turns (keeping base64 ONLY on the latest
+ *    image-bearing message) to prevent payload bloat and Vercel 4.5MB request limits.
+ * 6. Safely slides context window (default up to 40 turns) without breaking user-start.
+ */
+export function sanitizeAndPrepareConversationHistory(
+  messages: RawChatMessage[],
+  maxTurns = 40
+): GeminiContentItem[] {
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+
+  // 1. Filter out error messages, empty placeholder messages, or uninitialized turns
+  const validMessages = messages.filter((m) => {
+    if (!m) return false;
+    if (m.status === 'error') return false;
+    const hasText = Boolean(m.content && m.content.trim().length > 0);
+    const hasImage = Boolean(m.image?.url && m.image.url.trim().length > 0);
+    return hasText || hasImage;
+  });
+
+  if (validMessages.length === 0) {
+    return [];
+  }
+
+  // 2. Find the index of the most recent message with a base64 data image
+  let latestImageIndex = -1;
+  for (let i = validMessages.length - 1; i >= 0; i--) {
+    if (validMessages[i].image?.url?.startsWith('data:')) {
+      latestImageIndex = i;
+      break;
+    }
+  }
+
+  // 3. Convert to GeminiContentItem objects
+  const rawContents: GeminiContentItem[] = [];
+
+  for (let i = 0; i < validMessages.length; i++) {
+    const m = validMessages[i];
+    const role: 'user' | 'model' =
+      m.role === 'model' || m.role === 'assistant' ? 'model' : 'user';
+    const parts: GeminiContentPart[] = [];
+
+    // Only attach full base64 image data to the most recent image message
+    if (i === latestImageIndex && m.image?.url?.startsWith('data:')) {
+      const match = m.image.url.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        parts.push({
+          inlineData: {
+            mimeType: match[1],
+            data: match[2],
+          },
+        });
+      }
+    } else if (m.image?.name) {
+      // For older turns, use a lightweight text reference
+      parts.push({ text: `[Attached image: ${m.image.name}]` });
+    }
+
+    if (m.content && m.content.trim().length > 0) {
+      parts.push({ text: m.content.trim() });
+    }
+
+    if (parts.length > 0) {
+      rawContents.push({ role, parts });
+    }
+  }
+
+  if (rawContents.length === 0) {
+    return [];
+  }
+
+  // 4. Merge consecutive messages with the same role to enforce strict alternation
+  const alternatingContents: GeminiContentItem[] = [];
+
+  for (const item of rawContents) {
+    if (alternatingContents.length === 0) {
+      alternatingContents.push({ role: item.role, parts: [...item.parts] });
+    } else {
+      const prev = alternatingContents[alternatingContents.length - 1];
+      if (prev.role === item.role) {
+        // Merge into previous turn with same role
+        prev.parts.push(...item.parts);
+      } else {
+        alternatingContents.push({ role: item.role, parts: [...item.parts] });
+      }
+    }
+  }
+
+  // 5. Ensure the history starts with role: 'user'
+  while (alternatingContents.length > 0 && alternatingContents[0].role !== 'user') {
+    alternatingContents.shift();
+  }
+
+  if (alternatingContents.length === 0) {
+    return [];
+  }
+
+  // 6. Ensure the history ends with role: 'user'
+  while (alternatingContents.length > 0 && alternatingContents[alternatingContents.length - 1].role !== 'user') {
+    alternatingContents.pop();
+  }
+
+  if (alternatingContents.length === 0) {
+    return [];
+  }
+
+  // 7. Apply maxTurns limit safely (preserving user-start)
+  const maxContents = Math.max(1, maxTurns * 2 - 1);
+  if (alternatingContents.length > maxContents) {
+    let sliced = alternatingContents.slice(-maxContents);
+    while (sliced.length > 0 && sliced[0].role !== 'user') {
+      sliced.shift();
+    }
+    return sliced;
+  }
+
+  return alternatingContents;
+}
+
+// ============================================================================
+// 5. CLIENT CACHING & CONVERSATION PREPARATION
 // ============================================================================
 
 let cachedClient: { key: string; instance: GoogleGenAI } | null = null;
 
 export function getOrCreateGeminiClient(apiKey: string): GoogleGenAI {
-  if (!apiKey || apiKey.length < 8) {
-    throw new Error('GEMINI_API_KEY is not configured or too short.');
-  }
   if (cachedClient && cachedClient.key === apiKey) {
     return cachedClient.instance;
   }
@@ -338,67 +545,22 @@ export function getOrCreateGeminiClient(apiKey: string): GoogleGenAI {
 }
 
 export interface PreparedChatPayload {
-  contents: Array<{
-    role: 'user' | 'model';
-    parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
-  }>;
+  contents: GeminiContentItem[];
   config: {
     temperature: number;
-    systemInstruction?: string;
-    tools?: Array<{ googleSearch: Record<string, never> }>;
+    systemInstruction: string;
+    tools?: Array<{ googleSearch: {} }>;
   };
 }
 
-/**
- * Prunes and prepares the chat payload.
- * Crucial: Only keeps heavy base64 image data on the most recent message that actually has it.
- * This prevents megabytes of image re-upload on every turn, saving bandwidth and preventing timeouts.
- */
 export function prepareChatPayload(
-  messages: Array<{ role: string; content?: string; image?: { url?: string } }>,
+  messages: RawChatMessage[],
   responseStyle: ResponseStyle = 'balanced',
   customInstruction?: string,
   temperature = 0.7,
   searchGrounding = false
 ): PreparedChatPayload {
-  const recentMessages = messages.slice(-10);
-
-  // Find the index of the last message that carries an image
-  let lastImageIdx = -1;
-  for (let i = recentMessages.length - 1; i >= 0; i--) {
-    if (recentMessages[i].image?.url?.startsWith('data:')) {
-      lastImageIdx = i;
-      break;
-    }
-  }
-
-  const contents = recentMessages.map((m, idx) => {
-    const parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
-
-    // Only attach heavy base64 image on the most recent image-carrying message
-    if (idx === lastImageIdx && m.image?.url && m.image.url.startsWith('data:')) {
-      const match = m.image.url.match(/^data:([^;]+);base64,(.+)$/);
-      if (match) {
-        parts.push({
-          inlineData: {
-            mimeType: match[1],
-            data: match[2],
-          },
-        });
-      }
-    }
-
-    if (m.content && m.content.trim()) {
-      parts.push({ text: m.content });
-    } else if (parts.length === 0) {
-      parts.push({ text: ' ' });
-    }
-
-    return {
-      role: m.role === 'model' || m.role === 'assistant' ? ('model' as const) : ('user' as const),
-      parts,
-    };
-  });
+  const contents = sanitizeAndPrepareConversationHistory(messages, 40);
 
   const latestUserPrompt = messages.slice(-1)[0]?.content || '';
   const historyForRepeatCheck = messages.slice(0, -1).map((m) => ({
@@ -425,12 +587,12 @@ export function prepareChatPayload(
 }
 
 // ============================================================================
-// 5. SHARED CHAT EXECUTION (STREAMING & UNARY)
+// 6. SHARED CHAT EXECUTION (STREAMING & UNARY WITH RETRY & FAILOVER)
 // ============================================================================
 
 export interface StreamChatExecutionOptions {
   apiKey: string;
-  messages: Array<{ role: string; content?: string; image?: { url?: string } }>;
+  messages: RawChatMessage[];
   model: string;
   responseStyle?: ResponseStyle;
   temperature?: number;
@@ -482,7 +644,7 @@ export async function executeAIChatStream(options: StreamChatExecutionOptions): 
     const hasImage = Boolean(latestMsg?.image?.url);
     const promptText = latestMsg?.content || '';
     const autoResolved = resolveAutoModel(promptText, hasImage);
-    targetModel = resolveTargetApiModel(autoResolved) || 'gemini-3.5-flash';
+    targetModel = resolveTargetApiModel(autoResolved) || 'gemini-3.5-flash-lite';
   } else {
     const resolved = resolveTargetApiModel(requestedModel);
     if (!resolved) {
@@ -509,52 +671,97 @@ export async function executeAIChatStream(options: StreamChatExecutionOptions): 
     searchGrounding
   );
 
+  if (contents.length === 0) {
+    onError({
+      message: 'No valid message content to send to Gemini API.',
+      statusCode: 400,
+      category: 'invalid_request',
+      modelId: targetModel,
+      isRetryable: false,
+    });
+    return;
+  }
+
   let activeModel = targetModel;
 
-  // 3. Execution attempt with single-failover for Auto mode only on 503
-  const tryStreamOnModel = async (modelToRun: string): Promise<boolean> => {
-    const stream = await client.models.generateContentStream({
-      model: modelToRun,
-      contents,
-      config,
-    });
+  // 3. Execution attempt with exponential backoff retry for transient errors
+  const attemptStreamWithRetry = async (
+    modelToRun: string,
+    maxRetries = 2
+  ): Promise<{ ok: boolean; lastError?: any }> => {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (isAborted()) return { ok: false };
+      try {
+        const stream = await client.models.generateContentStream({
+          model: modelToRun,
+          contents,
+          config,
+        });
 
-    for await (const chunk of stream) {
-      if (isAborted()) {
-        return false;
-      }
-      const text = chunk.text;
-      if (text) {
-        if (!ttftMs) {
-          ttftMs = Date.now() - startTime;
+        for await (const chunk of stream) {
+          if (isAborted()) return { ok: false };
+          const text = chunk.text;
+          if (text) {
+            if (!ttftMs) {
+              ttftMs = Date.now() - startTime;
+            }
+            accumulatedText += text;
+            chunkCount++;
+            onChunk(text);
+          }
         }
-        accumulatedText += text;
-        chunkCount++;
-        onChunk(text);
+        return { ok: true };
+      } catch (err: any) {
+        if (accumulatedText.length > 0) {
+          // Tokens were already delivered; cannot transparently retry from stream start
+          throw err;
+        }
+        const parsed = parseAndCategorizeError(err, modelToRun);
+        if (parsed.isRetryable && attempt < maxRetries && !isAborted()) {
+          const delayMs = Math.min(
+            4000,
+            Math.round(
+              (parsed.retryAfterSec ? parsed.retryAfterSec * 1000 : 1000) * Math.pow(1.5, attempt) +
+                Math.random() * 400
+            )
+          );
+          console.warn(
+            `[AI Service] [${requestId}] [${modelToRun}] Transient ${parsed.category} (HTTP ${parsed.statusCode}). Retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries})...`
+          );
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        return { ok: false, lastError: err };
       }
     }
-    return true;
+    return { ok: false };
   };
 
   try {
-    try {
-      const ok = await tryStreamOnModel(targetModel);
-      if (!ok) return; // Client aborted
-    } catch (primaryErr: any) {
-      // In auto mode only: if error is 503 (high demand) and no tokens were sent yet, try one controlled fallback
-      const parsedErr = parseAndCategorizeError(primaryErr, targetModel);
+    let result = await attemptStreamWithRetry(targetModel, 2);
 
-      if (isAuto && parsedErr.category === 'overloaded' && accumulatedText.length === 0 && !isAborted()) {
-        const autoFallback = targetModel === 'gemini-3.5-flash' ? 'gemini-3.1-flash-lite' : 'gemini-3.5-flash';
-        console.warn(`[AI Service] [${requestId}] Auto model ${targetModel} experienced 503 high demand; retrying once on ${autoFallback}`);
-        activeModel = autoFallback;
-        const ok = await tryStreamOnModel(autoFallback);
-        if (!ok) return;
+    if (!result.ok && result.lastError && accumulatedText.length === 0 && !isAborted()) {
+      const parsedErr = parseAndCategorizeError(result.lastError, targetModel);
+
+      // In Auto Mode: if the target model failed due to 503 high demand or 429 quota exhaustion,
+      // perform controlled fallback to our free-tier workhorse
+      if (isAuto && (parsedErr.category === 'overloaded' || parsedErr.category === 'quota')) {
+        const fallbackModel =
+          targetModel === 'gemini-3.5-flash-lite' ? 'gemini-3.5-flash' : 'gemini-3.5-flash-lite';
+        console.warn(
+          `[AI Service] [${requestId}] Auto mode failover from ${targetModel} to ${fallbackModel} due to ${parsedErr.category}`
+        );
+        activeModel = fallbackModel;
+        result = await attemptStreamWithRetry(fallbackModel, 1);
+        if (!result.ok && result.lastError) {
+          throw result.lastError;
+        }
       } else {
-        // Manual mode or non-503: throw primary error directly to preserve transparency
-        throw primaryErr;
+        throw result.lastError;
       }
     }
+
+    if (isAborted()) return;
 
     const durationMs = Date.now() - startTime;
     const estimatedTokens = Math.max(Math.round(accumulatedText.length / 4), chunkCount);
@@ -569,7 +776,10 @@ export async function executeAIChatStream(options: StreamChatExecutionOptions): 
     });
   } catch (err: unknown) {
     const formatted = parseAndCategorizeError(err, activeModel);
-    console.error(`[AI Service Error] [${requestId}] [${activeModel}] [${formatted.category}] [HTTP ${formatted.statusCode}]:`, formatted.message);
+    console.error(
+      `[AI Service Error] [${requestId}] [${activeModel}] [${formatted.category}] [HTTP ${formatted.statusCode}]:`,
+      formatted.message
+    );
     onError(formatted);
   }
 }
@@ -579,7 +789,7 @@ export async function executeAIChatStream(options: StreamChatExecutionOptions): 
  */
 export async function executeAIChatUnary(options: {
   apiKey: string;
-  messages: Array<{ role: string; content?: string; image?: { url?: string } }>;
+  messages: RawChatMessage[];
   model: string;
   responseStyle?: ResponseStyle;
   temperature?: number;
@@ -601,6 +811,7 @@ export async function executeAIChatUnary(options: {
     temperature = 0.7,
     systemInstruction,
     searchGrounding = false,
+    requestId = `unary_${Date.now()}`,
   } = options;
 
   const startTime = Date.now();
@@ -612,7 +823,7 @@ export async function executeAIChatUnary(options: {
     const hasImage = Boolean(latestMsg?.image?.url);
     const promptText = latestMsg?.content || '';
     const autoResolved = resolveAutoModel(promptText, hasImage);
-    targetModel = resolveTargetApiModel(autoResolved) || 'gemini-3.5-flash';
+    targetModel = resolveTargetApiModel(autoResolved) || 'gemini-3.5-flash-lite';
   } else {
     const resolved = resolveTargetApiModel(requestedModel);
     if (!resolved) {
@@ -633,22 +844,45 @@ export async function executeAIChatUnary(options: {
   let activeModel = targetModel;
   let response: any = null;
 
+  const attemptUnaryWithRetry = async (modelToRun: string, maxRetries = 2) => {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await client.models.generateContent({
+          model: modelToRun,
+          contents,
+          config,
+        });
+      } catch (err: any) {
+        const parsed = parseAndCategorizeError(err, modelToRun);
+        if (parsed.isRetryable && attempt < maxRetries) {
+          const delayMs = Math.min(
+            4000,
+            Math.round(
+              (parsed.retryAfterSec ? parsed.retryAfterSec * 1000 : 1000) * Math.pow(1.5, attempt) +
+                Math.random() * 400
+            )
+          );
+          console.warn(
+            `[AI Service Unary] [${requestId}] [${modelToRun}] Transient ${parsed.category} (HTTP ${parsed.statusCode}). Retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries})...`
+          );
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        throw err;
+      }
+    }
+  };
+
   try {
-    response = await client.models.generateContent({
-      model: targetModel,
-      contents,
-      config,
-    });
+    response = await attemptUnaryWithRetry(targetModel, 2);
   } catch (err: any) {
     const parsedErr = parseAndCategorizeError(err, targetModel);
-    if (isAuto && parsedErr.category === 'overloaded') {
-      const fallback = targetModel === 'gemini-3.5-flash' ? 'gemini-3.1-flash-lite' : 'gemini-3.5-flash';
+    if (isAuto && (parsedErr.category === 'overloaded' || parsedErr.category === 'quota')) {
+      const fallback =
+        targetModel === 'gemini-3.5-flash-lite' ? 'gemini-3.5-flash' : 'gemini-3.5-flash-lite';
       activeModel = fallback;
-      response = await client.models.generateContent({
-        model: fallback,
-        contents,
-        config,
-      });
+      console.warn(`[AI Service Unary] Auto failover from ${targetModel} to ${fallback}`);
+      response = await attemptUnaryWithRetry(fallback, 1);
     } else {
       throw err;
     }
@@ -669,7 +903,7 @@ export async function executeAIChatUnary(options: {
 }
 
 // ============================================================================
-// 6. DEEP HEALTH DIAGNOSTICS
+// 7. DEEP HEALTH DIAGNOSTICS
 // ============================================================================
 
 export interface HealthDiagnosticReport {
@@ -693,6 +927,8 @@ export async function runHealthDiagnostics(apiKey: string): Promise<HealthDiagno
   const environment = process.env.VERCEL_ENV || process.env.NODE_ENV || 'development';
   const configured = Boolean(apiKey && apiKey.length > 8);
 
+  const testModelId = 'gemini-3.5-flash-lite';
+
   const report: HealthDiagnosticReport = {
     status: 'unconfigured',
     environment,
@@ -701,7 +937,7 @@ export async function runHealthDiagnostics(apiKey: string): Promise<HealthDiagno
     apiConnectivity: 'disconnected',
     availableModels: Object.keys(MODEL_REGISTRY),
     testedModel: {
-      id: 'gemini-3.5-flash',
+      id: testModelId,
       status: 'error',
     },
     timestamp: Date.now(),
@@ -715,9 +951,8 @@ export async function runHealthDiagnostics(apiKey: string): Promise<HealthDiagno
   try {
     const client = getOrCreateGeminiClient(apiKey);
 
-    // Live ping test with Gemini 3.5 Flash
     const pingRes = await client.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: testModelId,
       contents: 'ping',
     });
 
@@ -725,15 +960,15 @@ export async function runHealthDiagnostics(apiKey: string): Promise<HealthDiagno
       report.apiConnectivity = 'connected';
       report.status = 'healthy';
       report.testedModel = {
-        id: 'gemini-3.5-flash',
+        id: testModelId,
         status: 'ok',
         latencyMs: Date.now() - pingStart,
       };
     }
   } catch (err: any) {
-    const parsed = parseAndCategorizeError(err, 'gemini-3.5-flash');
+    const parsed = parseAndCategorizeError(err, testModelId);
     report.testedModel = {
-      id: 'gemini-3.5-flash',
+      id: testModelId,
       status: 'error',
       latencyMs: Date.now() - pingStart,
       error: parsed.message,
@@ -745,7 +980,7 @@ export async function runHealthDiagnostics(apiKey: string): Promise<HealthDiagno
     } else if (parsed.category === 'billing') {
       report.apiConnectivity = 'billing_error';
       report.status = 'degraded';
-    } else if (parsed.category === 'overloaded') {
+    } else if (parsed.category === 'overloaded' || parsed.category === 'quota') {
       report.apiConnectivity = 'connected';
       report.status = 'degraded';
     } else {

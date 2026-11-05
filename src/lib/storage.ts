@@ -18,7 +18,7 @@ export const DEFAULT_SETTINGS: ChatSettings = {
   systemInstruction: BASE_PERSONALITY_PROMPT,
   searchGrounding: false,
   theme: 'dark',
-  maxContextTurns: 10,
+  maxContextTurns: 30,
   autoModelRouting: true,
 };
 
@@ -257,7 +257,11 @@ export function deleteMessageAndSubsequent(
 // ---------------- SETTINGS & PREFERENCES ----------------
 
 export function getSavedSettings(): ChatSettings {
-  return safeGetItem<ChatSettings>(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
+  const settings = safeGetItem<ChatSettings>(STORAGE_KEYS.SETTINGS, DEFAULT_SETTINGS);
+  if (!settings.maxContextTurns || settings.maxContextTurns < 20) {
+    settings.maxContextTurns = 30;
+  }
+  return settings;
 }
 
 export function saveSettings(settings: Partial<ChatSettings>): ChatSettings {

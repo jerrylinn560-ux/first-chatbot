@@ -160,6 +160,12 @@ export default function App() {
     }
     setActiveId(id);
     setActiveConversationId(id);
+
+    const conv = getConversationById(id);
+    if (conv?.model) {
+      setSettingsState((prev) => ({ ...prev, model: conv.model || prev.model }));
+    }
+
     if (window.innerWidth < 1024) {
       setIsSidebarOpen(false);
     }
@@ -202,39 +208,11 @@ export default function App() {
 
   // ---------------- STREAMING SEND & MULTIMODAL LOGIC ----------------
 
-  const handleSendMessage = async (
-    promptText: string,
-    attachedImage?: { url: string; mimeType: string; name: string }
-  ) => {
-    if (!activeId || (!promptText.trim() && !attachedImage) || isStreaming) return;
+  const runAssistantResponse = async (conversationId: string) => {
+    if (isStreaming) return;
 
-    // Check if user is asking to generate an image via natural language prompt
-    const isImageRequest =
-      !attachedImage &&
-      /^\s*(generate|create|draw|paint|render|make)\s+(an?\s+)?(image|picture|photo|illustration|art|graphic|drawing)\b/i.test(
-        promptText
-      );
-
-    if (isImageRequest) {
-      const extractedPrompt = promptText
-        .replace(/^\s*(generate|create|draw|paint|render|make)\s+(an?\s+)?(image|picture|photo|illustration|art|graphic|drawing)\s+(of\s+)?/i, '')
-        .trim();
-      handleGenerateImage(extractedPrompt || promptText, '1:1', 'photorealistic');
-      return;
-    }
-
-    // 1. Add user message (with optional attached image)
-    const userMsgResult = addMessageToConversation(activeId, {
-      role: 'user',
-      content: promptText.trim(),
-      status: 'complete',
-      image: attachedImage ? { url: attachedImage.url, mimeType: attachedImage.mimeType, name: attachedImage.name } : undefined,
-    });
-
-    if (!userMsgResult) return;
-
-    // 2. Add placeholder assistant message
-    const assistantMsgResult = addMessageToConversation(activeId, {
+    // 1. Add placeholder assistant message
+    const assistantMsgResult = addMessageToConversation(conversationId, {
       role: 'model',
       content: '',
       status: 'streaming',
@@ -248,14 +226,20 @@ export default function App() {
 
     syncConversations();
 
-    // 3. Prepare context payload
-    const latestConv = getConversationById(activeId);
+    // 2. Prepare context payload - exclude incomplete assistant placeholder and error messages
+    const latestConv = getConversationById(conversationId);
     const existingMessages = latestConv?.messages || [];
-    const contextSlice = existingMessages
-      .filter((m) => m.id !== assistantMessageId)
-      .slice(-settings.maxContextTurns);
+    const maxTurns = Math.max(settings.maxContextTurns || 30, 20);
+    const cleanHistory = existingMessages
+      .filter(
+        (m) =>
+          m.id !== assistantMessageId &&
+          m.status !== 'error' &&
+          (Boolean(m.content?.trim()) || Boolean(m.image?.url))
+      )
+      .slice(-maxTurns);
 
-    const apiMessages = contextSlice.map((m) => ({
+    const apiMessages = cleanHistory.map((m) => ({
       role: m.role,
       content: m.content,
       image: m.image,
@@ -306,7 +290,7 @@ export default function App() {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
+        const lines = buffer.split(/\r?\n\r?\n/);
         buffer = lines.pop() || '';
 
         for (const line of lines) {
@@ -323,10 +307,10 @@ export default function App() {
               if (data.text) {
                 accumulatedText += data.text;
 
-                // High-performance React state update in memory without blocking disk I/O on every chunk!
+                // High-performance React state update in memory
                 setConversations((prev) =>
                   prev.map((c) =>
-                    c.id === activeId
+                    c.id === conversationId
                       ? {
                           ...c,
                           messages: c.messages.map((m) =>
@@ -356,7 +340,7 @@ export default function App() {
 
       // Finish streaming successfully - Save to LocalStorage once upon completion
       const duration = Date.now() - requestStartTime;
-      updateMessageInConversation(activeId, assistantMessageId, {
+      updateMessageInConversation(conversationId, assistantMessageId, {
         content: accumulatedText,
         status: 'complete',
         tokens: totalTokens || Math.max(Math.round(accumulatedText.length / 4), 1),
@@ -366,13 +350,13 @@ export default function App() {
       syncConversations();
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        updateMessageInConversation(activeId, assistantMessageId, {
+        updateMessageInConversation(conversationId, assistantMessageId, {
           content: accumulatedText || '(Generation stopped)',
           status: 'complete',
         });
       } else {
         console.error('Chat error:', err);
-        updateMessageInConversation(activeId, assistantMessageId, {
+        updateMessageInConversation(conversationId, assistantMessageId, {
           status: 'error',
           error:
             err.message || 'An error occurred while communicating with the assistant.',
@@ -384,6 +368,41 @@ export default function App() {
       setStreamingMessageId(null);
       abortControllerRef.current = null;
     }
+  };
+
+  const handleSendMessage = async (
+    promptText: string,
+    attachedImage?: { url: string; mimeType: string; name: string }
+  ) => {
+    if (!activeId || (!promptText.trim() && !attachedImage) || isStreaming) return;
+
+    // Check if user is asking to generate an image via natural language prompt
+    const isImageRequest =
+      !attachedImage &&
+      /^\s*(generate|create|draw|paint|render|make)\s+(an?\s+)?(image|picture|photo|illustration|art|graphic|drawing)\b/i.test(
+        promptText
+      );
+
+    if (isImageRequest) {
+      const extractedPrompt = promptText
+        .replace(/^\s*(generate|create|draw|paint|render|make)\s+(an?\s+)?(image|picture|photo|illustration|art|graphic|drawing)\s+(of\s+)?/i, '')
+        .trim();
+      handleGenerateImage(extractedPrompt || promptText, '1:1', 'photorealistic');
+      return;
+    }
+
+    // 1. Add user message (with optional attached image)
+    const userMsgResult = addMessageToConversation(activeId, {
+      role: 'user',
+      content: promptText.trim(),
+      status: 'complete',
+      image: attachedImage ? { url: attachedImage.url, mimeType: attachedImage.mimeType, name: attachedImage.name } : undefined,
+    });
+
+    if (!userMsgResult) return;
+
+    // 2. Stream assistant response
+    await runAssistantResponse(activeId);
   };
 
   const handleStopGeneration = () => {
@@ -474,29 +493,21 @@ export default function App() {
     }
   };
 
-  // Regenerate assistant response
-  const handleRegenerate = (msgIndex: number) => {
-    if (!activeConversation) return;
+  // Regenerate assistant response safely without duplicating the user message
+  const handleRegenerate = async (msgIndex: number) => {
+    if (!activeConversation || isStreaming) return;
     const msgs = activeConversation.messages;
     if (msgIndex < 0 || msgIndex >= msgs.length) return;
 
-    let userPrompt = '';
-    let userImg: any = undefined;
-    for (let i = msgIndex - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') {
-        userPrompt = msgs[i].content;
-        userImg = msgs[i].image;
-        break;
-      }
-    }
-
-    if (!userPrompt && !userImg) return;
-
     const targetMsg = msgs[msgIndex];
+    if (!targetMsg) return;
+
+    // Remove the failed/previous assistant message and any subsequent turns
     deleteMessageAndSubsequent(activeConversation.id, targetMsg.id);
     syncConversations();
 
-    handleSendMessage(userPrompt, userImg);
+    // Stream a fresh response directly for the existing conversation state
+    await runAssistantResponse(activeConversation.id);
   };
 
   // Edit user message and re-run
